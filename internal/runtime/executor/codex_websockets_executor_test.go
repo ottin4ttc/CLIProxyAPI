@@ -1463,6 +1463,52 @@ func TestParseCodexWebsocketErrorMarksConnectionLimitRetryable(t *testing.T) {
 	}
 }
 
+func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessOverloaded(t *testing.T) {
+	err, ok := parseCodexWebsocketError([]byte(`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`))
+	if !ok {
+		t.Fatal("expected status-less overloaded websocket error to be handled")
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status = %#v, want 429", err)
+	}
+}
+
+func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessCapacity(t *testing.T) {
+	err, ok := parseCodexWebsocketError([]byte(`{"type":"error","error":{"message":"Selected model is at capacity. Please try a different model."}}`))
+	if !ok {
+		t.Fatal("expected status-less capacity websocket error to be handled")
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status = %#v, want 429", err)
+	}
+}
+
+func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessUsageLimit(t *testing.T) {
+	err, ok := parseCodexWebsocketError([]byte(`{"type":"error","error":{"type":"usage_limit_reached","message":"usage limit reached","resets_in_seconds":9}}`))
+	if !ok {
+		t.Fatal("expected status-less usage limit websocket error to be handled")
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status = %#v, want 429", err)
+	}
+	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
+	if !ok || retryable.RetryAfter() == nil {
+		t.Fatal("expected retryAfter from usage limit metadata")
+	}
+	if got := *retryable.RetryAfter(); got != 9*time.Second {
+		t.Fatalf("retryAfter = %v, want 9s", got)
+	}
+}
+
+func TestParseCodexWebsocketErrorStillIgnoresStatuslessUnknownError(t *testing.T) {
+	if _, ok := parseCodexWebsocketError([]byte(`{"type":"error","error":{"type":"server_error","message":"boom"}}`)); ok {
+		t.Fatal("status-less unknown websocket error must stay unhandled (passthrough)")
+	}
+}
+
 func TestParseCodexWebsocketErrorUsesUsageLimitRetryMetadata(t *testing.T) {
 	err, ok := parseCodexWebsocketError([]byte(`{"type":"error","status":429,"body":{"error":{"type":"usage_limit_reached","message":"usage limit reached","resets_in_seconds":7}}}`))
 	if !ok {
