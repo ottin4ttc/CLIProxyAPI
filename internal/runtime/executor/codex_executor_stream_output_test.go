@@ -566,6 +566,53 @@ func TestCodexTerminalStreamErrHandlesUsageLimitResponseFailed(t *testing.T) {
 	}
 }
 
+func TestCodexTerminalStreamErrHandlesServerOverloadedErrorEvent(t *testing.T) {
+	streamErr, _, ok := codexTerminalStreamErr([]byte(`{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`))
+	if !ok {
+		t.Fatal("expected server_is_overloaded terminal error to be handled")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestCodexTerminalStreamErrHandlesOverloadedResponseFailed(t *testing.T) {
+	streamErr, _, ok := codexTerminalStreamErr([]byte(`{"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}`))
+	if !ok {
+		t.Fatal("expected server_is_overloaded response.failed terminal error to be handled")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestCodexTerminalStreamErrHandlesSlowDownErrorEvent(t *testing.T) {
+	streamErr, _, ok := codexTerminalStreamErr([]byte(`{"type":"error","error":{"code":"slow_down","message":"Slow down."}}`))
+	if !ok {
+		t.Fatal("expected slow_down terminal error to be handled")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestCodexTerminalStreamErrHandlesServiceUnavailableTypeOnly(t *testing.T) {
+	streamErr, _, ok := codexTerminalStreamErr([]byte(`{"type":"error","error":{"type":"service_unavailable_error","message":"Service unavailable."}}`))
+	if !ok {
+		t.Fatal("expected service_unavailable_error terminal error to be handled")
+	}
+	if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestCodexTerminalStreamErrStillIgnoresGenericServerError(t *testing.T) {
+	_, _, ok := codexTerminalStreamErr([]byte(`{"type":"error","error":{"type":"server_error","message":"boom"}}`))
+	if ok {
+		t.Fatal("generic server_error terminal event must stay unhandled (passthrough)")
+	}
+}
+
 func statusCodeFromTestError(t *testing.T, err error) int {
 	t.Helper()
 

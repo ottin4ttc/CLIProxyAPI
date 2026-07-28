@@ -202,7 +202,7 @@ func codexTerminalStreamErrShouldHandle(body []byte) bool {
 	if codexTerminalErrorIsContextLength(body) {
 		return true
 	}
-	if isCodexUsageLimitError(body) || isCodexModelCapacityError(body) {
+	if isCodexUsageLimitError(body) || isCodexModelCapacityError(body) || isCodexOverloadedError(body) {
 		return true
 	}
 	code, _, ok := codexStatusErrorClassification(http.StatusBadRequest, body)
@@ -282,7 +282,7 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	errCode := statusCode
-	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) {
+	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) || isCodexOverloadedError(body) {
 		errCode = http.StatusTooManyRequests
 	}
 	body = classifyCodexStatusError(errCode, body)
@@ -359,6 +359,29 @@ func isCodexModelCapacityError(errorBody []byte) bool {
 		}
 	}
 	return false
+}
+
+// isCodexOverloadedError reports whether the error body carries the ChatGPT
+// backend's transient overload signal (code "server_is_overloaded"/"slow_down",
+// or error.type "service_unavailable_error"). These arrive as in-band error
+// events inside an HTTP-200 stream. The Codex client deliberately does not
+// auto-retry ServerOverloaded, so mapping them to a retryable 429 here is the
+// only place the credential can cool down and the next attempt fail over.
+func isCodexOverloadedError(errorBody []byte) bool {
+	if len(errorBody) == 0 {
+		return false
+	}
+	candidates := []string{
+		gjson.GetBytes(errorBody, "error.code").String(),
+		gjson.GetBytes(errorBody, "code").String(),
+	}
+	for _, candidate := range candidates {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "server_is_overloaded", "slow_down":
+			return true
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(gjson.GetBytes(errorBody, "error.type").String()), "service_unavailable_error")
 }
 
 // isCodexUsageLimitError reports whether the error body represents a Codex

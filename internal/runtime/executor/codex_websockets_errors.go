@@ -38,7 +38,16 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 		status = int(gjson.GetBytes(payload, "status_code").Int())
 	}
 	if status <= 0 {
-		return nil, false
+		// Status-less in-band error events are normally forwarded downstream
+		// as ordinary stream data. Transient overload/limit signals must
+		// instead surface as retryable 429s so the credential cools down and
+		// the next attempt fails over; the Codex client never auto-retries
+		// ServerOverloaded on its own.
+		probe := buildCodexWebsocketErrorPayload(payload, http.StatusTooManyRequests)
+		if !isCodexOverloadedError(probe) && !isCodexModelCapacityError(probe) && !isCodexUsageLimitError(probe) {
+			return nil, false
+		}
+		status = http.StatusTooManyRequests
 	}
 
 	out := buildCodexWebsocketErrorPayload(payload, status)
