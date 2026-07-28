@@ -58,6 +58,9 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 	} else if isCodexWebsocketConnectionLimitError(payload) {
 		retryAfter := time.Duration(0)
 		statusError.retryAfter = &retryAfter
+	} else if status == http.StatusTooManyRequests && (isCodexOverloadedError(out) || isCodexModelCapacityError(out)) {
+		cooldown := codexOverloadCooldown
+		statusError.retryAfter = &cooldown
 	}
 	return statusErrWithHeaders{
 		statusErr: statusError,

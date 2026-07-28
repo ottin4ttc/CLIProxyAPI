@@ -248,6 +248,12 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 		strings.Contains(message, "too many tokens")
 }
 
+// codexOverloadCooldown is the explicit cooldown hint attached to transient
+// overload/capacity 429s that carry no reset metadata. Without it the quota
+// backoff starts at one second, which expires before a human-paced retry
+// arrives, so session affinity re-pins the same overloaded credential.
+const codexOverloadCooldown = time.Minute
+
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	errCode := statusCode
 	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) || isCodexOverloadedError(body) {
@@ -257,6 +263,9 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	err := statusErr{code: errCode, msg: string(body)}
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
+	} else if errCode == http.StatusTooManyRequests && (isCodexOverloadedError(body) || isCodexModelCapacityError(body)) {
+		cooldown := codexOverloadCooldown
+		err.retryAfter = &cooldown
 	}
 	return err
 }

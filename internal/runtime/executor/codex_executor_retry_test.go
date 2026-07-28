@@ -69,8 +69,14 @@ func TestNewCodexStatusErrTreatsCapacityAsRetryableRateLimit(t *testing.T) {
 	if got := err.StatusCode(); got != http.StatusTooManyRequests {
 		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
 	}
-	if err.RetryAfter() != nil {
-		t.Fatalf("expected nil explicit retryAfter for capacity fallback, got %v", *err.RetryAfter())
+	// An explicit cooldown hint keeps the credential out of rotation long
+	// enough for human-paced retries; the 1s-base quota backoff expires before
+	// a manual retry arrives and session affinity re-pins the same credential.
+	if err.RetryAfter() == nil {
+		t.Fatal("expected explicit retryAfter hint for capacity errors")
+	}
+	if got := *err.RetryAfter(); got != codexOverloadCooldown {
+		t.Fatalf("retryAfter = %v, want %v", got, codexOverloadCooldown)
 	}
 }
 
