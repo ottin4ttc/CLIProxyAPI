@@ -1532,6 +1532,10 @@ func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessOverloaded(t *testin
 	if !ok || status.StatusCode() != http.StatusTooManyRequests {
 		t.Fatalf("status = %#v, want 429", err)
 	}
+	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
+	if !ok || retryable.RetryAfter() == nil || *retryable.RetryAfter() != codexOverloadCooldown {
+		t.Fatalf("expected %v retryAfter hint for status-less overloaded error", codexOverloadCooldown)
+	}
 }
 
 func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessCapacity(t *testing.T) {

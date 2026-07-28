@@ -574,6 +574,9 @@ func TestCodexTerminalStreamErrHandlesServerOverloadedErrorEvent(t *testing.T) {
 	if got := statusCodeFromTestError(t, streamErr); got != http.StatusTooManyRequests {
 		t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
 	}
+	if streamErr.RetryAfter() == nil || *streamErr.RetryAfter() != codexOverloadCooldown {
+		t.Fatalf("retryAfter = %v, want %v", streamErr.RetryAfter(), codexOverloadCooldown)
+	}
 }
 
 func TestCodexTerminalStreamErrHandlesOverloadedResponseFailed(t *testing.T) {
