@@ -15,6 +15,7 @@ const (
 
 	AttributeAPIKey           = "api_key"
 	AttributeAuthKind         = "auth_kind"
+	AttributeBucket           = "bucket"
 	AttributeCodexAlphaSearch = "codex_alpha_search"
 	AttributeConfigIndex      = "config_index"
 	AttributePath             = "path"
