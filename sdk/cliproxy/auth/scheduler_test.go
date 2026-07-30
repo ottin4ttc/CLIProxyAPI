@@ -390,6 +390,65 @@ func TestSchedulerPick_PromotesExpiredCooldownBeforePick(t *testing.T) {
 	}
 }
 
+// TestSchedulerPick_UnavailableErrorCarriesCooldownReason exercises the scheduler-shard cooldown
+// path (modelScheduler.unavailableErrorLocked) end to end: every candidate is parked in cooldown
+// state with a differing LastError.Cause, and the resulting modelCooldownError.reason must reflect
+// whether the causes agree.
+func TestSchedulerPick_UnavailableErrorCarriesCooldownReason(t *testing.T) {
+	t.Parallel()
+
+	model := "gpt-5.6-sol"
+	future := time.Now().Add(time.Minute)
+	cooldownModelState := func(cause string) map[string]*ModelState {
+		return map[string]*ModelState{
+			model: {
+				Status:      StatusError,
+				Unavailable: true,
+				Quota:       QuotaState{Exceeded: true, NextRecoverAt: future},
+				LastError:   &Error{Cause: cause},
+			},
+		}
+	}
+
+	t.Run("all overload reports overload", func(t *testing.T) {
+		t.Parallel()
+		registerSchedulerModels(t, "codex", model, "cooldown-overload-a", "cooldown-overload-b")
+		scheduler := newSchedulerForTest(
+			&RoundRobinSelector{},
+			&Auth{ID: "cooldown-overload-a", Provider: "codex", ModelStates: cooldownModelState(FailureCauseOverload)},
+			&Auth{ID: "cooldown-overload-b", Provider: "codex", ModelStates: cooldownModelState(FailureCauseOverload)},
+		)
+
+		_, errPick := scheduler.pickSingle(context.Background(), "codex", model, cliproxyexecutor.Options{}, nil)
+		cooldownErr, ok := errPick.(*modelCooldownError)
+		if !ok {
+			t.Fatalf("pickSingle() error = %#v, want *modelCooldownError", errPick)
+		}
+		if cooldownErr.reason != FailureCauseOverload {
+			t.Fatalf("reason = %q, want %q", cooldownErr.reason, FailureCauseOverload)
+		}
+	})
+
+	t.Run("mixed causes report empty reason", func(t *testing.T) {
+		t.Parallel()
+		registerSchedulerModels(t, "codex", model, "cooldown-mixed-overload", "cooldown-mixed-quota")
+		scheduler := newSchedulerForTest(
+			&RoundRobinSelector{},
+			&Auth{ID: "cooldown-mixed-overload", Provider: "codex", ModelStates: cooldownModelState(FailureCauseOverload)},
+			&Auth{ID: "cooldown-mixed-quota", Provider: "codex", ModelStates: cooldownModelState(FailureCauseQuota)},
+		)
+
+		_, errPick := scheduler.pickSingle(context.Background(), "codex", model, cliproxyexecutor.Options{}, nil)
+		cooldownErr, ok := errPick.(*modelCooldownError)
+		if !ok {
+			t.Fatalf("pickSingle() error = %#v, want *modelCooldownError", errPick)
+		}
+		if cooldownErr.reason != "" {
+			t.Fatalf("reason = %q, want empty", cooldownErr.reason)
+		}
+	})
+}
+
 func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledSubset(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package auth
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,5 +78,9 @@ func TestModelCooldownErrorCarriesReason(t *testing.T) {
 	}
 	if err.StatusCode() != http.StatusTooManyRequests {
 		t.Fatalf("StatusCode() = %d, want 429", err.StatusCode())
+	}
+	// reason is an internal routing signal only; it must never reach the wire.
+	if strings.Contains(err.Error(), "reason") {
+		t.Fatalf("Error() = %q, must not leak the internal reason field", err.Error())
 	}
 }
