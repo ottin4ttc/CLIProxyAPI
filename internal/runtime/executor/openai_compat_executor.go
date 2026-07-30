@@ -863,6 +863,10 @@ type statusErr struct {
 	code       int
 	msg        string
 	retryAfter *time.Duration
+	// cause is an optional provider-specific failure classification used by the
+	// auth layer to decide between credential rotation and model fallback.
+	// Empty means unclassified.
+	cause string
 }
 
 func (e statusErr) Error() string {
@@ -873,3 +877,4 @@ func (e statusErr) Error() string {
 }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) FailureCause() string       { return e.cause }

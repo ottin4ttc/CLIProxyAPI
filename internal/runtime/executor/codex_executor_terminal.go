@@ -286,13 +286,34 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 // arrives, so session affinity re-pins the same overloaded credential.
 const codexOverloadCooldown = time.Minute
 
+// Failure causes attached to Codex status errors so the auth layer can tell a
+// model-wide upstream outage (retry on another model) from per-account quota
+// exhaustion (retry on another credential).
+const (
+	codexFailureCauseOverload = "overload"
+	codexFailureCauseQuota    = "quota"
+)
+
+// codexFailureCause classifies a Codex error body. An empty result means the
+// body carries no cause this layer knows how to act on.
+func codexFailureCause(body []byte) string {
+	if isCodexOverloadedError(body) || isCodexModelCapacityError(body) {
+		return codexFailureCauseOverload
+	}
+	if isCodexUsageLimitError(body) {
+		return codexFailureCauseQuota
+	}
+	return ""
+}
+
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	errCode := statusCode
 	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) || isCodexOverloadedError(body) {
 		errCode = http.StatusTooManyRequests
 	}
+	cause := codexFailureCause(body)
 	body = classifyCodexStatusError(errCode, body)
-	err := statusErr{code: errCode, msg: string(body)}
+	err := statusErr{code: errCode, msg: string(body), cause: cause}
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
 	} else if errCode == http.StatusTooManyRequests && (isCodexOverloadedError(body) || isCodexModelCapacityError(body)) {
