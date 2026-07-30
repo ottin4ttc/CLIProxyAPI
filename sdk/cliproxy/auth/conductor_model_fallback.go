@@ -28,15 +28,19 @@ func requestPathFromOptions(opts cliproxyexecutor.Options) string {
 }
 
 // codexNativeRequest reports whether the inbound request speaks Codex's own
-// Responses protocol or came from an official Codex client. Those clients
-// retry upstream overloads themselves and carry conversation state across
-// turns, so this proxy must neither cap their credential rotation nor rewrite
-// the model they asked for.
+// Responses protocol or came from an official Codex client. This covers both
+// the standard "/v1/responses" route group and the "/backend-api/codex"
+// route group, which is the chatgpt_base_url-compatible alias a real Codex
+// CLI hits when pointed at this proxy (see internal/api/server_routes.go).
+// Those clients retry upstream overloads themselves and carry conversation
+// state across turns, so this proxy must neither cap their credential
+// rotation nor rewrite the model they asked for.
 func codexNativeRequest(opts cliproxyexecutor.Options) bool {
 	if originator := strings.TrimSpace(opts.Headers.Get("Originator")); originator != "" {
 		return true
 	}
-	return strings.HasPrefix(requestPathFromOptions(opts), "/v1/responses")
+	path := requestPathFromOptions(opts)
+	return strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/backend-api/codex")
 }
 
 // hasCodexProvider reports whether codex is among the candidate providers.
