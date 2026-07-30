@@ -1258,6 +1258,7 @@ func cloneError(err *Error) *Error {
 		Message:    err.Message,
 		Retryable:  err.Retryable,
 		HTTPStatus: err.HTTPStatus,
+		Cause:      err.Cause,
 	}
 }
 
@@ -1290,6 +1291,34 @@ func isRequestScopedError(err error) bool {
 	return ok && requestErr != nil && requestErr.IsRequestScoped()
 }
 
+// Failure causes propagated from provider executors.
+const (
+	FailureCauseOverload = "overload"
+	FailureCauseQuota    = "quota"
+)
+
+// failureCauseFromError extracts a provider-classified failure cause without
+// importing the executor packages, mirroring statusCodeFromError.
+func failureCauseFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	type failureCauser interface {
+		FailureCause() string
+	}
+	var fc failureCauser
+	if errors.As(err, &fc) && fc != nil {
+		if cause := strings.TrimSpace(fc.FailureCause()); cause != "" {
+			return cause
+		}
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		return strings.TrimSpace(authErr.Cause)
+	}
+	return ""
+}
+
 func resultErrorFromError(err error) *Error {
 	if err == nil {
 		return nil
@@ -1315,6 +1344,9 @@ func resultErrorFromError(err error) *Error {
 		if resultErr.Code == "" || resultErr.Code == connectionLifecycleErrorCode {
 			resultErr.Code = connectionLifecycleErrorCode
 		}
+	}
+	if resultErr.Cause == "" {
+		resultErr.Cause = failureCauseFromError(err)
 	}
 	return resultErr
 }
