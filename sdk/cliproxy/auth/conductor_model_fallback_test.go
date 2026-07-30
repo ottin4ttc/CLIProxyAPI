@@ -240,11 +240,35 @@ func TestShouldAttemptCodexModelFallbackCooldownQuota(t *testing.T) {
 	}
 }
 
-// TestShouldAttemptCodexModelFallbackDeclinesUnderHomeMode covers the Home
-// gate: executeStreamMixedOnce ignores maxRetryCredentials when Home mode is
-// enabled, so passing 1 there caps nothing and each fallback tier could burn
-// through every Home credential during an overload incident. The manager
-// must decline to degrade rather than run that unbounded walk.
+// TestCodexFallbackEligibleDeclinesUnderHomeMode pins the Home gate to
+// codexFallbackEligible rather than to the fallback decision alone.
+// codexFallbackEligible gates both halves of the feature: the rotation cap in
+// shouldRetryAfterError and the degrade itself. ExecuteStream is the one entry
+// point whose retry loop runs under Home mode, so a Home gate that lived only
+// in shouldAttemptCodexModelFallback would cap rotation at attempt >= 1 and
+// then refuse to degrade - a 429 after two sweeps where Home mode previously
+// kept rotating, and no degraded response either.
+func TestCodexFallbackEligibleDeclinesUnderHomeMode(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-14", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	if !manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
+		t.Fatal("a configured chain on a translated codex request must be eligible without Home mode")
+	}
+
+	homeCfg := &internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}}
+	homeCfg.Codex.ModelFallback = []internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}}
+	manager.SetConfig(homeCfg)
+
+	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
+		t.Fatal("Home mode must make the request ineligible, so the rotation cap in shouldRetryAfterError never fires either")
+	}
+}
+
+// TestShouldAttemptCodexModelFallbackDeclinesUnderHomeMode covers the other
+// half of the same gate: the degrade itself must stay declined under Home mode.
 func TestShouldAttemptCodexModelFallbackDeclinesUnderHomeMode(t *testing.T) {
 	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
 	manager := newFallbackManager(t, "codex-fb-10", executor,
