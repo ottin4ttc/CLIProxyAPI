@@ -3,6 +3,7 @@ package executor
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestNewCodexStatusErrFailureCause(t *testing.T) {
@@ -58,5 +59,11 @@ func TestStatusErrFailureCauseDefaultsEmpty(t *testing.T) {
 	err := statusErr{code: http.StatusTooManyRequests, msg: "plain"}
 	if got := err.FailureCause(); got != "" {
 		t.Fatalf("FailureCause() = %q, want empty", got)
+	}
+}
+
+func TestCodexOverloadCooldownIsFiveMinutes(t *testing.T) {
+	if codexOverloadCooldown != 5*time.Minute {
+		t.Fatalf("codexOverloadCooldown = %v, want 5m", codexOverloadCooldown)
 	}
 }

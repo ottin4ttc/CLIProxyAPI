@@ -283,8 +283,11 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 // codexOverloadCooldown is the explicit cooldown hint attached to transient
 // overload/capacity 429s that carry no reset metadata. Without it the quota
 // backoff starts at one second, which expires before a human-paced retry
-// arrives, so session affinity re-pins the same overloaded credential.
-const codexOverloadCooldown = time.Minute
+// arrives, so session affinity re-pins the same overloaded credential. Five
+// minutes also cuts futile probes during a sustained overload window; because
+// cooldowns are per-auth and staggered, a pool still re-probes roughly once a
+// minute overall.
+const codexOverloadCooldown = 5 * time.Minute
 
 // Failure causes attached to Codex status errors so the auth layer can tell a
 // model-wide upstream outage (retry on another model) from per-account quota
