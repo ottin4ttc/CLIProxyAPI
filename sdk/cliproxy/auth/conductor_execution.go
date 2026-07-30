@@ -122,7 +122,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	}
 	if lastErr != nil {
 		if m.shouldAttemptCodexModelFallback(ctx, lastErr, normalized, retryModel, opts) {
-			if resp, ok, errFallback := m.tryCodexModelFallback(ctx, normalized, req, opts, retryModel); errFallback != nil {
+			if resp, ok, errFallback := m.tryCodexModelFallbackCount(ctx, normalized, req, opts, retryModel); errFallback != nil {
 				return cliproxyexecutor.Response{}, errFallback
 			} else if ok {
 				return resp, nil

@@ -135,6 +135,25 @@ func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string,
 	return cliproxyexecutor.Response{}, false, nil
 }
 
+// tryCodexModelFallbackCount is the count-tokens counterpart of
+// tryCodexModelFallback. It stays on the count executor so a degraded tier
+// still returns a token count rather than a completion payload.
+func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
+	for _, tier := range m.codexFallbackChain(model) {
+		if ctx.Err() != nil {
+			return cliproxyexecutor.Response{}, false, nil
+		}
+		fallbackReq := req
+		fallbackReq.Model = tier
+		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		if errExec == nil {
+			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the count_tokens request")
+			return resp, true, nil
+		}
+	}
+	return cliproxyexecutor.Response{}, false, nil
+}
+
 // tryCodexModelFallbackStream is the streaming counterpart of
 // tryCodexModelFallback. It only runs before any bytes reach the client.
 func (m *Manager) tryCodexModelFallbackStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (*cliproxyexecutor.StreamResult, bool, error) {
