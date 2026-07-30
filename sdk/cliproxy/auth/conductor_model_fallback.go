@@ -124,6 +124,22 @@ func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr e
 	return false
 }
 
+// codexFallbackOptions returns opts with the requested-model metadata rewritten
+// to the tier actually being executed, so the response reports the model that
+// really served the request rather than the one the client asked for. The
+// metadata map is cloned because Options is copied by value but its Metadata is
+// a shared reference: mutating it in place would corrupt the caller's options
+// and leak the tier across attempts.
+func codexFallbackOptions(opts cliproxyexecutor.Options, tier string) cliproxyexecutor.Options {
+	meta := make(map[string]any, len(opts.Metadata)+1)
+	for k, v := range opts.Metadata {
+		meta[k] = v
+	}
+	meta[cliproxyexecutor.RequestedModelMetadataKey] = tier
+	opts.Metadata = meta
+	return opts
+}
+
 // tryCodexModelFallback walks the configured chain once, trying a single
 // credential per tier. ok is false when no tier succeeded.
 func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
@@ -133,7 +149,7 @@ func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string,
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, codexFallbackOptions(opts, tier), 1)
 		if errExec == nil {
 			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the request")
 			return resp, true, nil
@@ -152,7 +168,7 @@ func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []st
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, codexFallbackOptions(opts, tier), 1)
 		if errExec == nil {
 			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the count_tokens request")
 			return resp, true, nil
@@ -170,7 +186,7 @@ func (m *Manager) tryCodexModelFallbackStream(ctx context.Context, providers []s
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, codexFallbackOptions(opts, tier), 1)
 		if errStream == nil {
 			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the stream")
 			return result, true, nil
