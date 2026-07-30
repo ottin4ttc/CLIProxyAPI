@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 type causeCarryingError struct {
@@ -43,5 +44,38 @@ func TestResultErrorFromErrorCarriesCause(t *testing.T) {
 	}
 	if resultErr.Cause != FailureCauseOverload {
 		t.Fatalf("Cause = %q, want %q", resultErr.Cause, FailureCauseOverload)
+	}
+}
+
+func TestCooldownReasonForModel(t *testing.T) {
+	const model = "gpt-5.6-sol"
+	overloaded := &Auth{ID: "a", ModelStates: map[string]*ModelState{
+		model: {Unavailable: true, LastError: &Error{Cause: FailureCauseOverload}},
+	}}
+	quota := &Auth{ID: "b", ModelStates: map[string]*ModelState{
+		model: {Unavailable: true, LastError: &Error{Cause: FailureCauseQuota}},
+	}}
+
+	if got := cooldownReasonForModel([]*Auth{overloaded}, model); got != FailureCauseOverload {
+		t.Fatalf("all-overload reason = %q, want %q", got, FailureCauseOverload)
+	}
+	if got := cooldownReasonForModel([]*Auth{overloaded, quota}, model); got != "" {
+		t.Fatalf("mixed reason = %q, want empty", got)
+	}
+	if got := cooldownReasonForModel([]*Auth{quota}, model); got != FailureCauseQuota {
+		t.Fatalf("all-quota reason = %q, want %q", got, FailureCauseQuota)
+	}
+	if got := cooldownReasonForModel(nil, model); got != "" {
+		t.Fatalf("empty reason = %q, want empty", got)
+	}
+}
+
+func TestModelCooldownErrorCarriesReason(t *testing.T) {
+	err := newModelCooldownError("gpt-5.6-sol", "codex", time.Minute, FailureCauseOverload)
+	if err.reason != FailureCauseOverload {
+		t.Fatalf("reason = %q, want %q", err.reason, FailureCauseOverload)
+	}
+	if err.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %d, want 429", err.StatusCode())
 	}
 }

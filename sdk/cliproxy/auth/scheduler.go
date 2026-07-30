@@ -483,7 +483,7 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		if resetIn < 0 {
 			resetIn = 0
 		}
-		return newModelCooldownError(model, "", resetIn)
+		return newModelCooldownError(model, "", resetIn, "")
 	}
 	return &Error{Code: "auth_unavailable", Message: "no auth available"}
 }
@@ -893,7 +893,17 @@ func (m *modelScheduler) unavailableErrorLocked(provider, model string, predicat
 		if resetIn < 0 {
 			resetIn = 0
 		}
-		return newModelCooldownError(model, providerForError, resetIn)
+		cooling := make([]*Auth, 0, len(m.entries))
+		for _, entry := range m.entries {
+			if predicate != nil && !predicate(entry) {
+				continue
+			}
+			if entry == nil || entry.auth == nil {
+				continue
+			}
+			cooling = append(cooling, entry.auth)
+		}
+		return newModelCooldownError(model, providerForError, resetIn, cooldownReasonForModel(cooling, model))
 	}
 	return &Error{Code: "auth_unavailable", Message: "no auth available"}
 }
