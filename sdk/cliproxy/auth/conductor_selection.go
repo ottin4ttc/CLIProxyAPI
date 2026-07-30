@@ -367,7 +367,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			return nil, newModelCooldownError(routeModel, providerForError, resetIn)
+			return nil, newModelCooldownError(routeModel, providerForError, resetIn, cooldownReasonForModel(auths, routeModel))
 		}
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}

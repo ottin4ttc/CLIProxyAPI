@@ -78,9 +78,12 @@ type modelCooldownError struct {
 	model    string
 	resetIn  time.Duration
 	provider string
+	// reason records why every credential is cooling, when all of them agree.
+	// Empty when causes are mixed or unknown.
+	reason string
 }
 
-func newModelCooldownError(model, provider string, resetIn time.Duration) *modelCooldownError {
+func newModelCooldownError(model, provider string, resetIn time.Duration, reason string) *modelCooldownError {
 	if resetIn < 0 {
 		resetIn = 0
 	}
@@ -88,6 +91,7 @@ func newModelCooldownError(model, provider string, resetIn time.Duration) *model
 		model:    model,
 		provider: provider,
 		resetIn:  resetIn,
+		reason:   reason,
 	}
 }
 
@@ -292,7 +296,7 @@ func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, no
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			return nil, newModelCooldownError(model, providerForError, resetIn)
+			return nil, newModelCooldownError(model, providerForError, resetIn, cooldownReasonForModel(auths, model))
 		}
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}
@@ -532,6 +536,38 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	return available[0], nil
+}
+
+// cooldownReasonForModel returns the shared failure cause behind a model's
+// cooldown, or an empty string when the candidates disagree or carry no cause.
+func cooldownReasonForModel(auths []*Auth, model string) string {
+	reason := ""
+	for _, candidate := range auths {
+		if candidate == nil || len(candidate.ModelStates) == 0 {
+			return ""
+		}
+		state, ok := candidate.ModelStates[model]
+		if (!ok || state == nil) && model != "" {
+			if baseModel := canonicalModelKey(model); baseModel != "" && baseModel != model {
+				state, ok = candidate.ModelStates[baseModel]
+			}
+		}
+		if !ok || state == nil || state.LastError == nil {
+			return ""
+		}
+		cause := strings.TrimSpace(state.LastError.Cause)
+		if cause == "" {
+			return ""
+		}
+		if reason == "" {
+			reason = cause
+			continue
+		}
+		if reason != cause {
+			return ""
+		}
+	}
+	return reason
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
