@@ -89,6 +89,16 @@ func (m *Manager) codexFallbackEligible(providers []string, model string, opts c
 	return len(m.codexFallbackChain(model)) > 0
 }
 
+// codexFallbackErrorLogMaxLen bounds how much of a tier-failure error message
+// this package logs at Warn. For Codex, err.Error() is the raw upstream
+// response body (see statusErr in internal/runtime/executor), not a
+// summarized message: this package cannot reach the executor's
+// helps.SummarizeErrorBody, which is what the executor's own Debug-level
+// error logs use, without importing internal/runtime/executor/helps - and
+// that package already imports this one, so the import would cycle. A local
+// length cap keeps the Warn line bounded without that import.
+const codexFallbackErrorLogMaxLen = 300
+
 // codexModelFallbackKey marks a request that is already running on a fallback
 // tier, so a failing tier never triggers another round of fallback.
 type codexModelFallbackKey struct{}
@@ -184,7 +194,7 @@ func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string,
 			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the request")
 			return resp, true, nil
 		}
-		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed: %v", errExec)
+		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed: %s", truncateString(errExec.Error(), codexFallbackErrorLogMaxLen))
 	}
 	if len(chain) > 0 {
 		codexFallbackExhaustedLogEntry(ctx, model, chain).Warn("codex model fallback exhausted the chain, returning the original error")
@@ -208,7 +218,7 @@ func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []st
 			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the count_tokens request")
 			return resp, true, nil
 		}
-		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed for count_tokens: %v", errExec)
+		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed for count_tokens: %s", truncateString(errExec.Error(), codexFallbackErrorLogMaxLen))
 	}
 	if len(chain) > 0 {
 		codexFallbackExhaustedLogEntry(ctx, model, chain).Warn("codex model fallback exhausted the chain for count_tokens, returning the original error")
@@ -231,7 +241,7 @@ func (m *Manager) tryCodexModelFallbackStream(ctx context.Context, providers []s
 			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the stream")
 			return result, true, nil
 		}
-		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed for the stream: %v", errStream)
+		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed for the stream: %s", truncateString(errStream.Error(), codexFallbackErrorLogMaxLen))
 	}
 	if len(chain) > 0 {
 		codexFallbackExhaustedLogEntry(ctx, model, chain).Warn("codex model fallback exhausted the chain for the stream, returning the original error")
