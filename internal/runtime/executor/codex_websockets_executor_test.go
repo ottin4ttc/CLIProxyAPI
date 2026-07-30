@@ -1567,6 +1567,61 @@ func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessUsageLimit(t *testin
 	}
 }
 
+// TestParseCodexWebsocketErrorReportsFailureCause pins the failure cause on
+// websocket errors. Websocket requests never degrade themselves, but the
+// cooldown they write is shared per-auth-per-model state: a websocket client
+// that cools the whole codex pool without a cause leaves
+// ModelState.LastError.Cause empty, so a later translated HTTP request computes
+// an empty modelCooldownError reason and refuses to fall back.
+func TestParseCodexWebsocketErrorReportsFailureCause(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "status-less overloaded",
+			payload: `{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`,
+			want:    codexFailureCauseOverload,
+		},
+		{
+			name:    "explicit 429 overloaded",
+			payload: `{"type":"error","status":429,"body":{"error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}`,
+			want:    codexFailureCauseOverload,
+		},
+		{
+			name:    "status-less model capacity",
+			payload: `{"type":"error","error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+			want:    codexFailureCauseOverload,
+		},
+		{
+			name:    "usage limit stays quota",
+			payload: `{"type":"error","error":{"type":"usage_limit_reached","message":"usage limit reached","resets_in_seconds":9}}`,
+			want:    codexFailureCauseQuota,
+		},
+		{
+			name:    "connection limit carries no cause",
+			payload: `{"type":"error","status":429,"error":{"code":"websocket_connection_limit_reached","message":"too many websockets"}}`,
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err, ok := parseCodexWebsocketError([]byte(tc.payload))
+			if !ok {
+				t.Fatal("expected the websocket error to be handled")
+			}
+			classified, ok := err.(interface{ FailureCause() string })
+			if !ok {
+				t.Fatalf("error %#v does not report a failure cause", err)
+			}
+			if got := classified.FailureCause(); got != tc.want {
+				t.Fatalf("FailureCause() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseCodexWebsocketErrorStillIgnoresStatuslessUnknownError(t *testing.T) {
 	if _, ok := parseCodexWebsocketError([]byte(`{"type":"error","error":{"type":"server_error","message":"boom"}}`)); ok {
 		t.Fatal("status-less unknown websocket error must stay unhandled (passthrough)")
