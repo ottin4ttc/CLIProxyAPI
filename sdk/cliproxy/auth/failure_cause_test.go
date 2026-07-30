@@ -1,11 +1,15 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type causeCarryingError struct {
@@ -82,5 +86,109 @@ func TestModelCooldownErrorCarriesReason(t *testing.T) {
 	// reason is an internal routing signal only; it must never reach the wire.
 	if strings.Contains(err.Error(), "reason") {
 		t.Fatalf("Error() = %q, must not leak the internal reason field", err.Error())
+	}
+}
+
+func (e causeCarryingError) RetryAfter() *time.Duration {
+	d := time.Second
+	return &d
+}
+
+func TestCodexNativeRequest(t *testing.T) {
+	responsesOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
+	}
+	if !codexNativeRequest(responsesOpts) {
+		t.Fatal("/v1/responses must count as a native Codex request")
+	}
+
+	originatorOpts := cliproxyexecutor.Options{
+		Headers:  http.Header{"Originator": {"codex_cli_rs"}},
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/chat/completions"},
+	}
+	if !codexNativeRequest(originatorOpts) {
+		t.Fatal("a client-sent Originator header must count as a native Codex request")
+	}
+
+	translatedOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/chat/completions"},
+	}
+	if codexNativeRequest(translatedOpts) {
+		t.Fatal("/v1/chat/completions without Originator must not count as native")
+	}
+
+	messagesOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/messages"},
+	}
+	if codexNativeRequest(messagesOpts) {
+		t.Fatal("/v1/messages without Originator must not count as native")
+	}
+
+	if codexNativeRequest(cliproxyexecutor.Options{}) {
+		t.Fatal("empty options must not count as native")
+	}
+}
+
+func TestCodexFallbackEligible(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	cfg := &internalconfig.Config{}
+	cfg.Codex.ModelFallback = []internalconfig.CodexModelFallback{
+		{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}},
+	}
+	manager.SetConfig(cfg)
+
+	translated := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/chat/completions"},
+	}
+	native := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
+	}
+
+	if !manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", translated) {
+		t.Fatal("translated codex request with a configured chain must be eligible")
+	}
+	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", native) {
+		t.Fatal("native Codex protocol request must never be eligible")
+	}
+	if manager.codexFallbackEligible([]string{"claude"}, "gpt-5.6-sol", translated) {
+		t.Fatal("non-codex provider must not be eligible")
+	}
+	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-terra", translated) {
+		t.Fatal("model without a configured chain must not be eligible")
+	}
+
+	empty := NewManager(nil, nil, nil)
+	empty.SetConfig(&internalconfig.Config{})
+	if empty.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", translated) {
+		t.Fatal("empty configuration must not be eligible")
+	}
+}
+
+func TestShouldRetryAfterErrorStopsRotatingOnOverload(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	manager.SetRetryConfig(3, 30*time.Second, 0)
+	// shouldRetryAfterError's status-429 branch gates on retryAllowed, which
+	// only permits a retry when a matching provider auth is registered (see
+	// TestManager_ShouldRetryAfterError_SkipsWrappedHomeConcurrencyBusy for the
+	// same pattern). Register one so the assertions below exercise the new
+	// fallback-cap logic instead of failing on that unrelated precondition.
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "overload-auth", Provider: "codex"}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	overloadErr := causeCarryingError{cause: FailureCauseOverload}
+	if _, retry := manager.shouldRetryAfterError(overloadErr, 0, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, true); !retry {
+		t.Fatal("attempt 0 on overload should still rotate once")
+	}
+	if _, retry := manager.shouldRetryAfterError(overloadErr, 1, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, true); retry {
+		t.Fatal("attempt 1 on overload must not rotate again when the request can fall back")
+	}
+	if _, retry := manager.shouldRetryAfterError(overloadErr, 1, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, false); !retry {
+		t.Fatal("a request that cannot fall back must keep rotating, exactly as before this change")
+	}
+
+	quotaErr := causeCarryingError{cause: FailureCauseQuota}
+	if _, retry := manager.shouldRetryAfterError(quotaErr, 1, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, true); !retry {
+		t.Fatal("quota errors must keep rotating at attempt 1")
 	}
 }
