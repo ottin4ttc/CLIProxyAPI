@@ -127,6 +127,27 @@ func TestCodexNativeRequest(t *testing.T) {
 	if codexNativeRequest(cliproxyexecutor.Options{}) {
 		t.Fatal("empty options must not count as native")
 	}
+
+	backendAPIResponsesOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/backend-api/codex/responses"},
+	}
+	if !codexNativeRequest(backendAPIResponsesOpts) {
+		t.Fatal("/backend-api/codex/responses must count as a native Codex request")
+	}
+
+	backendAPICompactOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/backend-api/codex/responses/compact"},
+	}
+	if !codexNativeRequest(backendAPICompactOpts) {
+		t.Fatal("/backend-api/codex/responses/compact must count as a native Codex request")
+	}
+
+	chatCompletionsOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/chat/completions"},
+	}
+	if codexNativeRequest(chatCompletionsOpts) {
+		t.Fatal("/v1/chat/completions must not count as native (guards against an over-broad prefix)")
+	}
 }
 
 func TestCodexFallbackEligible(t *testing.T) {
@@ -143,12 +164,18 @@ func TestCodexFallbackEligible(t *testing.T) {
 	native := cliproxyexecutor.Options{
 		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
 	}
+	backendAPINative := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/backend-api/codex/responses"},
+	}
 
 	if !manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", translated) {
 		t.Fatal("translated codex request with a configured chain must be eligible")
 	}
 	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", native) {
 		t.Fatal("native Codex protocol request must never be eligible")
+	}
+	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", backendAPINative) {
+		t.Fatal("native Codex chatgpt_base_url alias request must never be eligible")
 	}
 	if manager.codexFallbackEligible([]string{"claude"}, "gpt-5.6-sol", translated) {
 		t.Fatal("non-codex provider must not be eligible")
