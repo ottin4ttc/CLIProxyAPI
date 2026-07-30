@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -111,6 +113,11 @@ func TestExecuteWithoutConfigDoesNotFallBack(t *testing.T) {
 	if _, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{}); errExecute == nil {
 		t.Fatal("empty configuration must preserve the original failure")
 	}
+	for _, model := range executor.seen {
+		if model != "gpt-5.6-sol" {
+			t.Fatalf("executor ran %q, want only gpt-5.6-sol", model)
+		}
+	}
 }
 
 func TestExecuteDoesNotFallBackForNativeCodexProtocol(t *testing.T) {
@@ -175,7 +182,67 @@ func TestFallbackWalksChainAndReturnsOriginalError(t *testing.T) {
 		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-absent"}}},
 		"gpt-5.6-sol")
 
-	if _, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{}); errExecute == nil {
+	_, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
+	if errExecute == nil {
 		t.Fatal("unusable chain must surface the original error")
+	}
+	var authErr *Error
+	if !errors.As(errExecute, &authErr) || authErr == nil {
+		t.Fatalf("error = %v, want *Error carrying the original overload failure", errExecute)
+	}
+	if authErr.HTTPStatus != http.StatusTooManyRequests || authErr.Message != "overloaded" {
+		t.Fatalf("error = %+v, want the original 429 overload error, not a fallback-walk artifact (e.g. auth_not_found)", authErr)
+	}
+}
+
+// TestShouldAttemptCodexModelFallbackCooldownOverload covers the
+// modelCooldownError branch in shouldAttemptCodexModelFallback: it is the
+// only path by which an all-credentials-cooling overload (a modelCooldownError
+// carries no FailureCause()) reaches the fallback decision.
+func TestShouldAttemptCodexModelFallbackCooldownOverload(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-8", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	cooldownErr := newModelCooldownError("gpt-5.6-sol", "codex", time.Minute, FailureCauseOverload)
+	if !manager.shouldAttemptCodexModelFallback(context.Background(), cooldownErr, []string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
+		t.Fatal("an all-credentials-cooling overload must be eligible for fallback")
+	}
+}
+
+// TestShouldAttemptCodexModelFallbackCooldownQuota is safety property 1 (never
+// degrade on quota) reached through the cooldown path rather than a raw
+// *Error with Cause set.
+func TestShouldAttemptCodexModelFallbackCooldownQuota(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseQuota}
+	manager := newFallbackManager(t, "codex-fb-9", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	cooldownErr := newModelCooldownError("gpt-5.6-sol", "codex", time.Minute, FailureCauseQuota)
+	if manager.shouldAttemptCodexModelFallback(context.Background(), cooldownErr, []string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
+		t.Fatal("an all-credentials-cooling quota exhaustion must not be eligible for fallback")
+	}
+}
+
+// TestShouldAttemptCodexModelFallbackDeclinesUnderHomeMode covers the Home
+// gate: executeStreamMixedOnce ignores maxRetryCredentials when Home mode is
+// enabled, so passing 1 there caps nothing and each fallback tier could burn
+// through every Home credential during an overload incident. The manager
+// must decline to degrade rather than run that unbounded walk.
+func TestShouldAttemptCodexModelFallbackDeclinesUnderHomeMode(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-10", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	homeCfg := &internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}}
+	homeCfg.Codex.ModelFallback = []internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}}
+	manager.SetConfig(homeCfg)
+
+	overloadErr := &Error{HTTPStatus: http.StatusTooManyRequests, Message: "overloaded", Cause: FailureCauseOverload}
+	if manager.shouldAttemptCodexModelFallback(context.Background(), overloadErr, []string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
+		t.Fatal("Home mode must not degrade: the one-credential-per-tier budget is void under Home dispatch")
 	}
 }
