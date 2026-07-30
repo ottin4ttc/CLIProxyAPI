@@ -129,36 +129,57 @@ func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr e
 	return false
 }
 
-// codexFallbackOptions returns opts with the requested-model metadata rewritten
-// to the tier actually being executed, so the response reports the model that
-// really served the request rather than the one the client asked for. The
-// metadata map is cloned because Options is copied by value but its Metadata is
-// a shared reference: mutating it in place would corrupt the caller's options
-// and leak the tier across attempts.
-func codexFallbackOptions(opts cliproxyexecutor.Options, tier string) cliproxyexecutor.Options {
-	meta := make(map[string]any, len(opts.Metadata)+1)
-	for k, v := range opts.Metadata {
-		meta[k] = v
+// The requested-model metadata is deliberately left untouched while walking the
+// chain. The response already reports the serving tier: the codex executor
+// stamps req.Model into the translated response, and fallbackReq.Model is the
+// tier. The auth layer's only response relabeling, rewriteForceMappedResponse
+// and the wrapStreamResult rewriter, is gated on OAuthModelAliasResult
+// .ForceMapping, whose OriginalAlias comes from the configured OAuth alias (or,
+// under Home mode, from auth attributes) - never from this metadata key. Keeping
+// the key at the client's original model preserves requested_model !=
+// resolved_model in usage_events as the fallback-rate query.
+
+// codexFallbackLogEntry describes one step of a chain walk. The auth field is
+// read back from the metadata the executor publishes for the credential it
+// selected (publishSelectedAuthMetadata); it is omitted when the caller supplied
+// no metadata map for that to be published into.
+func codexFallbackLogEntry(ctx context.Context, opts cliproxyexecutor.Options, model, tier string) *log.Entry {
+	fields := log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}
+	if authID := stringMetadataValue(opts.Metadata, cliproxyexecutor.SelectedAuthMetadataKey); authID != "" {
+		fields["auth"] = authID
 	}
-	meta[cliproxyexecutor.RequestedModelMetadataKey] = tier
-	opts.Metadata = meta
-	return opts
+	return logEntryWithRequestID(ctx).WithFields(fields)
+}
+
+// codexFallbackExhaustedLogEntry describes a chain walk in which no tier served
+// the request, which is the case an operator most needs to see.
+func codexFallbackExhaustedLogEntry(ctx context.Context, model string, chain []string) *log.Entry {
+	return logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"from":   model,
+		"chain":  strings.Join(chain, ","),
+		"reason": FailureCauseOverload,
+	})
 }
 
 // tryCodexModelFallback walks the configured chain once, trying a single
 // credential per tier. ok is false when no tier succeeded.
 func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
-	for _, tier := range m.codexFallbackChain(model) {
+	chain := m.codexFallbackChain(model)
+	for _, tier := range chain {
 		if ctx.Err() != nil {
 			return cliproxyexecutor.Response{}, false, nil
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, codexFallbackOptions(opts, tier), 1)
+		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
 		if errExec == nil {
-			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the request")
+			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the request")
 			return resp, true, nil
 		}
+		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed: %v", errExec)
+	}
+	if len(chain) > 0 {
+		codexFallbackExhaustedLogEntry(ctx, model, chain).Warn("codex model fallback exhausted the chain, returning the original error")
 	}
 	return cliproxyexecutor.Response{}, false, nil
 }
@@ -167,17 +188,22 @@ func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string,
 // tryCodexModelFallback. It stays on the count executor so a degraded tier
 // still returns a token count rather than a completion payload.
 func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
-	for _, tier := range m.codexFallbackChain(model) {
+	chain := m.codexFallbackChain(model)
+	for _, tier := range chain {
 		if ctx.Err() != nil {
 			return cliproxyexecutor.Response{}, false, nil
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, codexFallbackOptions(opts, tier), 1)
+		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
 		if errExec == nil {
-			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the count_tokens request")
+			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the count_tokens request")
 			return resp, true, nil
 		}
+		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed for count_tokens: %v", errExec)
+	}
+	if len(chain) > 0 {
+		codexFallbackExhaustedLogEntry(ctx, model, chain).Warn("codex model fallback exhausted the chain for count_tokens, returning the original error")
 	}
 	return cliproxyexecutor.Response{}, false, nil
 }
@@ -185,17 +211,22 @@ func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []st
 // tryCodexModelFallbackStream is the streaming counterpart of
 // tryCodexModelFallback. It only runs before any bytes reach the client.
 func (m *Manager) tryCodexModelFallbackStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (*cliproxyexecutor.StreamResult, bool, error) {
-	for _, tier := range m.codexFallbackChain(model) {
+	chain := m.codexFallbackChain(model)
+	for _, tier := range chain {
 		if ctx.Err() != nil {
 			return nil, false, nil
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, codexFallbackOptions(opts, tier), 1)
+		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
 		if errStream == nil {
-			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the stream")
+			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the stream")
 			return result, true, nil
 		}
+		codexFallbackLogEntry(ctx, opts, model, tier).Warnf("codex model fallback tier failed for the stream: %v", errStream)
+	}
+	if len(chain) > 0 {
+		codexFallbackExhaustedLogEntry(ctx, model, chain).Warn("codex model fallback exhausted the chain for the stream, returning the original error")
 	}
 	return nil, false, nil
 }
