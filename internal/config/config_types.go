@@ -150,8 +150,19 @@ type CodexConfig struct {
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
+	// ModelFallback lists ordered fallback tiers used when a model is refused by
+	// upstream capacity or overload errors. Quota exhaustion never triggers it.
+	// Empty disables the feature.
+	ModelFallback []CodexModelFallback `yaml:"model-fallback,omitempty" json:"model-fallback,omitempty"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
+}
+
+// CodexModelFallback maps one model to an ordered list of lower tiers tried
+// when the upstream reports the model as overloaded or at capacity.
+type CodexModelFallback struct {
+	From string   `yaml:"from" json:"from"`
+	To   []string `yaml:"to" json:"to"`
 }
 
 // CodexLiveMediaRelayConfig configures the in-process Codex Live WebRTC gateway.
