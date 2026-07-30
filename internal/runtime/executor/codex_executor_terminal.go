@@ -284,9 +284,12 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 // overload/capacity 429s that carry no reset metadata. Without it the quota
 // backoff starts at one second, which expires before a human-paced retry
 // arrives, so session affinity re-pins the same overloaded credential. Five
-// minutes also cuts futile probes during a sustained overload window; because
-// cooldowns are per-auth and staggered, a pool still re-probes roughly once a
-// minute overall.
+// minutes also cuts futile probes during a sustained overload window: each auth
+// probes the model at most once per five minutes instead of once per minute.
+// Nothing staggers those windows - they start whenever an auth happens to fail -
+// so a busy pool spreads its probes only as its arrival times happen to be
+// spread, and a small or idle pool whose credentials fail together re-probes
+// only once every five minutes.
 const codexOverloadCooldown = 5 * time.Minute
 
 // Failure causes attached to Codex status errors so the auth layer can tell a
