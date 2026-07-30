@@ -66,11 +66,21 @@ func (m *Manager) codexFallbackChain(model string) []string {
 }
 
 // codexFallbackEligible reports whether this request may be degraded to a
-// lower model tier when the upstream reports the model as overloaded. It gates
-// both the rotation cap and the fallback itself, so a request it rejects keeps
-// exactly the behaviour it had before this feature existed.
+// lower model tier when the upstream reports the model as overloaded. It is the
+// single gate for both the rotation cap and the fallback itself, so a request
+// it rejects keeps exactly the behaviour it had before this feature existed.
+// Both halves must agree: capping rotation without allowing the degrade would
+// leave the caller worse off than either behaviour on its own.
 func (m *Manager) codexFallbackEligible(providers []string, model string, opts cliproxyexecutor.Options) bool {
 	if m == nil || !hasCodexProvider(providers) {
+		return false
+	}
+	// Home mode ignores maxRetryCredentials in execute*MixedOnce, so the
+	// one-credential-per-tier budget this feature relies on would be void:
+	// each tier could burn through every Home credential during an overload
+	// incident, multiplied by the chain length. Decline rather than degrade,
+	// and therefore keep the unbounded rotation Home mode had before.
+	if m.HomeEnabled() {
 		return false
 	}
 	if codexNativeRequest(opts) {
@@ -104,13 +114,8 @@ func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr e
 	if isRequestTerminatedError(lastErr) || isRequestInvalidError(lastErr) {
 		return false
 	}
-	// Home mode ignores maxRetryCredentials in executeStreamMixedOnce, so the
-	// one-credential-per-tier budget this feature relies on would be void:
-	// each tier could burn through every Home credential during an overload
-	// incident, multiplied by the chain length. Decline rather than degrade.
-	if m.HomeEnabled() {
-		return false
-	}
+	// codexFallbackEligible carries the Home-mode gate, so the rotation cap and
+	// the degrade share one source of truth.
 	if !m.codexFallbackEligible(providers, model, opts) {
 		return false
 	}
