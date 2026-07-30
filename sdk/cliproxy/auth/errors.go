@@ -12,6 +12,10 @@ type Error struct {
 	Retryable bool `json:"retryable"`
 	// HTTPStatus optionally records an HTTP-like status code for the error.
 	HTTPStatus int `json:"http_status,omitempty"`
+	// Cause optionally records a provider-classified failure cause such as
+	// "overload" or "quota". It drives the rotate-versus-fall-back decision and
+	// is deliberately separate from Code, which carries unrelated identifiers.
+	Cause string `json:"cause,omitempty"`
 }
 
 // Error implements the error interface.
