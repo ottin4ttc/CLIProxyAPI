@@ -41,8 +41,12 @@ func (e *codexTierExecutor) ExecuteStream(_ context.Context, _ *Auth, req clipro
 
 func (e *codexTierExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) { return auth, nil }
 
-func (e *codexTierExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusNotImplemented, Message: "not implemented"}
+func (e *codexTierExecutor) CountTokens(_ context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	e.seen = append(e.seen, req.Model)
+	if req.Model == e.primary {
+		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusTooManyRequests, Message: "overloaded", Cause: e.cause}
+	}
+	return cliproxyexecutor.Response{Payload: []byte("count:" + req.Model)}, nil
 }
 
 func (e *codexTierExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
@@ -125,6 +129,21 @@ func TestExecuteDoesNotFallBackForNativeCodexProtocol(t *testing.T) {
 		if model != "gpt-5.6-sol" {
 			t.Fatalf("executor ran %q for a native Codex request, want only gpt-5.6-sol", model)
 		}
+	}
+}
+
+func TestExecuteCountFallsBackToCountNotCompletion(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-7", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	resp, errExecute := manager.ExecuteCount(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("execute count: %v", errExecute)
+	}
+	if string(resp.Payload) != "count:gpt-5.6-terra" {
+		t.Fatalf("payload = %q, want count:gpt-5.6-terra", string(resp.Payload))
 	}
 }
 
