@@ -104,6 +104,13 @@ func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr e
 	if isRequestTerminatedError(lastErr) || isRequestInvalidError(lastErr) {
 		return false
 	}
+	// Home mode ignores maxRetryCredentials in executeStreamMixedOnce, so the
+	// one-credential-per-tier budget this feature relies on would be void:
+	// each tier could burn through every Home credential during an overload
+	// incident, multiplied by the chain length. Decline rather than degrade.
+	if m.HomeEnabled() {
+		return false
+	}
 	if !m.codexFallbackEligible(providers, model, opts) {
 		return false
 	}
