@@ -406,14 +406,10 @@ func (m *ModelState) Clone() *ModelState {
 		return nil
 	}
 	copyState := *m
-	if m.LastError != nil {
-		copyState.LastError = &Error{
-			Code:       m.LastError.Code,
-			Message:    m.LastError.Message,
-			Retryable:  m.LastError.Retryable,
-			HTTPStatus: m.LastError.HTTPStatus,
-		}
-	}
+	// cloneError is the single copy rule for *Error. Rebuilding the fields here
+	// silently dropped Cause, and since credential selection only ever sees
+	// clones, a recorded failure cause could never reach cooldownReasonForModel.
+	copyState.LastError = cloneError(m.LastError)
 	return &copyState
 }
 

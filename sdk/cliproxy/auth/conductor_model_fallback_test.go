@@ -499,6 +499,95 @@ func TestFallbackTriesExactlyOneCredentialPerTier(t *testing.T) {
 	}
 }
 
+// TestExecuteFallsBackWhenEveryCredentialIsAlreadyCooling drives the design's
+// main path (状态 B) through the real chain rather than through a hand-built
+// modelCooldownError: an overload failure is recorded by MarkResult, lands in
+// ModelState.LastError.Cause, and must survive into the next request's
+// credential selection so cooldownReasonForModel can report it.
+//
+// The first request is 状态 A - the model is not yet cooling, the executor is
+// really called, and its overload error drives the degrade. That request also
+// puts the only credential's copy of the primary model into cooldown, so the
+// second request short-circuits in selection with a modelCooldownError and
+// never reaches the executor for the primary model. That second request is the
+// one production returned as a bare 429 model_cooldown.
+func TestExecuteFallsBackWhenEveryCredentialIsAlreadyCooling(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-17", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	firstResp, errFirst := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
+	if errFirst != nil {
+		t.Fatalf("first execute (状态 A): %v", errFirst)
+	}
+	if got := responseModel(t, firstResp.Payload); got != "gpt-5.6-terra" {
+		t.Fatalf("first response model = %q, want gpt-5.6-terra", got)
+	}
+
+	attemptsAfterFirst := len(executor.seen)
+
+	secondResp, errSecond := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
+	if errSecond != nil {
+		t.Fatalf("second execute (状态 B, every credential already cooling on overload): %v", errSecond)
+	}
+	if got := responseModel(t, secondResp.Payload); got != "gpt-5.6-terra" {
+		t.Fatalf("second response model = %q, want gpt-5.6-terra", got)
+	}
+
+	// Selection short-circuited, so the primary model must not have reached the
+	// executor again: the degrade decision rests purely on the recorded cause.
+	if got := countModelAttempts(executor.seen[attemptsAfterFirst:], "gpt-5.6-sol"); got != 0 {
+		t.Fatalf("primary model attempts on the second request = %d, want 0 (selection must short-circuit); seen=%v", got, executor.seen)
+	}
+}
+
+// TestExecuteDoesNotFallBackWhenEveryCredentialIsCoolingOnQuota is the safety
+// counterpart of the test above: making the recorded cause reachable must not
+// make a quota cooldown degrade. It runs the same two-request shape with a
+// quota cause, so the second request still short-circuits in selection but its
+// reported reason must not be overload.
+func TestExecuteDoesNotFallBackWhenEveryCredentialIsCoolingOnQuota(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseQuota}
+	manager := newFallbackManager(t, "codex-fb-18", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	if _, errFirst := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{}); errFirst == nil {
+		t.Fatal("quota exhaustion must not fall back to another model")
+	}
+
+	if _, errSecond := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{}); errSecond == nil {
+		t.Fatal("an all-credentials-cooling quota exhaustion must not fall back to another model")
+	}
+	for _, model := range executor.seen {
+		if model != "gpt-5.6-sol" {
+			t.Fatalf("executor ran %q, want only gpt-5.6-sol; seen=%v", model, executor.seen)
+		}
+	}
+}
+
+// TestCooldownReasonSurvivesAuthClone pins the specific link that broke 状态 B:
+// selection never reads the Manager's live *Auth, it reads a Clone, so a cause
+// that Clone drops is a cause cooldownReasonForModel can never see.
+func TestCooldownReasonSurvivesAuthClone(t *testing.T) {
+	auth := &Auth{
+		ID:       "codex-clone-1",
+		Provider: "codex",
+		ModelStates: map[string]*ModelState{
+			"gpt-5.6-sol": {
+				Status:      StatusError,
+				Unavailable: true,
+				LastError:   &Error{HTTPStatus: http.StatusTooManyRequests, Message: "overloaded", Cause: FailureCauseOverload},
+			},
+		},
+	}
+
+	if got := cooldownReasonForModel([]*Auth{auth.Clone()}, "gpt-5.6-sol"); got != FailureCauseOverload {
+		t.Fatalf("cooldownReasonForModel after Auth.Clone() = %q, want %q", got, FailureCauseOverload)
+	}
+}
+
 // TestFallbackWalksToTheNextTierWhenTheFirstFails covers safety property 5's
 // second half: the chain is walked once, in order. The first tier fails and the
 // second succeeds, which is the only shape that exercises the continue-to-next-
