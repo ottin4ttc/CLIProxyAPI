@@ -143,6 +143,14 @@ func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr e
 // read back from the metadata the executor publishes for the credential it
 // selected (publishSelectedAuthMetadata); it is omitted when the caller supplied
 // no metadata map for that to be published into.
+//
+// The field is the last credential this request touched, not necessarily the
+// credential that ran the tier this log line reports on: publishSelectedAuthMetadata
+// only runs once a credential is actually selected, so a tier that fails during
+// credential selection itself (no credential available for that tier, the
+// pickNextMixed path) leaves the map holding whatever an earlier tier - or the
+// primary sweep before any fallback - last published. Treat "auth" as a hint
+// about recent activity on this request, not an attribution of which tier failed.
 func codexFallbackLogEntry(ctx context.Context, opts cliproxyexecutor.Options, model, tier string) *log.Entry {
 	fields := log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}
 	if authID := stringMetadataValue(opts.Metadata, cliproxyexecutor.SelectedAuthMetadataKey); authID != "" {
