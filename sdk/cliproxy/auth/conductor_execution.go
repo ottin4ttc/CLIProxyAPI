@@ -68,6 +68,13 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 	}
 	if lastErr != nil {
+		if m.shouldAttemptCodexModelFallback(ctx, lastErr, normalized, retryModel, opts) {
+			if resp, ok, errFallback := m.tryCodexModelFallback(ctx, normalized, req, opts, retryModel); errFallback != nil {
+				return cliproxyexecutor.Response{}, errFallback
+			} else if ok {
+				return resp, nil
+			}
+		}
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
@@ -114,6 +121,13 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		}
 	}
 	if lastErr != nil {
+		if m.shouldAttemptCodexModelFallback(ctx, lastErr, normalized, retryModel, opts) {
+			if resp, ok, errFallback := m.tryCodexModelFallback(ctx, normalized, req, opts, retryModel); errFallback != nil {
+				return cliproxyexecutor.Response{}, errFallback
+			} else if ok {
+				return resp, nil
+			}
+		}
 		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -156,6 +170,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 	}
 	if lastErr != nil {
+		if m.shouldAttemptCodexModelFallback(ctx, lastErr, normalized, retryModel, opts) {
+			if result, ok, errFallback := m.tryCodexModelFallbackStream(ctx, normalized, req, opts, retryModel); errFallback != nil {
+				return nil, errFallback
+			} else if ok {
+				return result, nil
+			}
+		}
 		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits

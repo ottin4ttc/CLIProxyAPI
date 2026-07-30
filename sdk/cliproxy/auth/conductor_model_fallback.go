@@ -1,10 +1,13 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"strings"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // requestPathFromOptions returns the inbound request path recorded in options
@@ -74,4 +77,78 @@ func (m *Manager) codexFallbackEligible(providers []string, model string, opts c
 		return false
 	}
 	return len(m.codexFallbackChain(model)) > 0
+}
+
+// codexModelFallbackKey marks a request that is already running on a fallback
+// tier, so a failing tier never triggers another round of fallback.
+type codexModelFallbackKey struct{}
+
+func withCodexModelFallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, codexModelFallbackKey{}, true)
+}
+
+func codexModelFallbackActive(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	active, _ := ctx.Value(codexModelFallbackKey{}).(bool)
+	return active
+}
+
+// shouldAttemptCodexModelFallback reports whether lastErr represents a
+// model-wide upstream overload that a lower tier could still serve.
+func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr error, providers []string, model string, opts cliproxyexecutor.Options) bool {
+	if m == nil || lastErr == nil || codexModelFallbackActive(ctx) {
+		return false
+	}
+	if isRequestTerminatedError(lastErr) || isRequestInvalidError(lastErr) {
+		return false
+	}
+	if !m.codexFallbackEligible(providers, model, opts) {
+		return false
+	}
+	if failureCauseFromError(lastErr) == FailureCauseOverload {
+		return true
+	}
+	var cooldownErr *modelCooldownError
+	if errors.As(lastErr, &cooldownErr) && cooldownErr != nil {
+		return cooldownErr.reason == FailureCauseOverload
+	}
+	return false
+}
+
+// tryCodexModelFallback walks the configured chain once, trying a single
+// credential per tier. ok is false when no tier succeeded.
+func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
+	for _, tier := range m.codexFallbackChain(model) {
+		if ctx.Err() != nil {
+			return cliproxyexecutor.Response{}, false, nil
+		}
+		fallbackReq := req
+		fallbackReq.Model = tier
+		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		if errExec == nil {
+			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the request")
+			return resp, true, nil
+		}
+	}
+	return cliproxyexecutor.Response{}, false, nil
+}
+
+// tryCodexModelFallbackStream is the streaming counterpart of
+// tryCodexModelFallback. It only runs before any bytes reach the client.
+func (m *Manager) tryCodexModelFallbackStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (*cliproxyexecutor.StreamResult, bool, error) {
+	for _, tier := range m.codexFallbackChain(model) {
+		if ctx.Err() != nil {
+			return nil, false, nil
+		}
+		fallbackReq := req
+		fallbackReq.Model = tier
+		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		if errStream == nil {
+			log.WithFields(log.Fields{"from": model, "to": tier, "reason": FailureCauseOverload}).Warn("codex model fallback served the stream")
+			return result, true, nil
+		}
+	}
+	return nil, false, nil
 }
