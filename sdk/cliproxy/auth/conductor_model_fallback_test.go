@@ -56,8 +56,9 @@ func (e *codexTierExecutor) ExecuteStream(_ context.Context, _ *Auth, req clipro
 
 func (e *codexTierExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) { return auth, nil }
 
-func (e *codexTierExecutor) CountTokens(_ context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *codexTierExecutor) CountTokens(_ context.Context, _ *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	e.seen = append(e.seen, req.Model)
+	e.seenRequestedModel = append(e.seenRequestedModel, requestedModelFromOpts(opts))
 	if req.Model == e.primary {
 		return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusTooManyRequests, Message: "overloaded", Cause: e.cause}
 	}
@@ -309,6 +310,34 @@ func TestExecuteStreamFallbackReportsTheServingTier(t *testing.T) {
 		if chunk.Err != nil {
 			t.Fatalf("stream chunk error: %v", chunk.Err)
 		}
+	}
+
+	if len(executor.seenRequestedModel) == 0 {
+		t.Fatal("executor observed no calls")
+	}
+	if last := executor.seenRequestedModel[len(executor.seenRequestedModel)-1]; last != "gpt-5.6-terra" {
+		t.Fatalf("requested-model metadata seen by the serving tier = %q, want gpt-5.6-terra (the tier, not the original model)", last)
+	}
+	if got := callerMeta[cliproxyexecutor.RequestedModelMetadataKey]; got != "gpt-5.6-sol" {
+		t.Fatalf("caller's Metadata map was mutated in place: requested-model = %v, want unchanged gpt-5.6-sol", got)
+	}
+}
+
+// TestExecuteCountFallbackReportsTheServingTier is the count-tokens
+// counterpart of TestExecuteFallbackReportsTheServingTier: it proves
+// tryCodexModelFallbackCount also rewrites RequestedModelMetadataKey to the
+// tier, not just the completion and streaming walkers.
+func TestExecuteCountFallbackReportsTheServingTier(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-13", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	callerMeta := map[string]any{cliproxyexecutor.RequestedModelMetadataKey: "gpt-5.6-sol"}
+	opts := cliproxyexecutor.Options{Metadata: callerMeta}
+
+	if _, errExecute := manager.ExecuteCount(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, opts); errExecute != nil {
+		t.Fatalf("execute count: %v", errExecute)
 	}
 
 	if len(executor.seenRequestedModel) == 0 {
