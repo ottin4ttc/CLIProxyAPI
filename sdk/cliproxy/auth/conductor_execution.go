@@ -50,6 +50,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	fallbackEligible := m.codexFallbackEligible(normalized, retryModel, opts)
 	for attempt := 0; ; attempt++ {
 		resp, errExec := m.executeMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
 		if errExec == nil {
@@ -59,7 +60,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait, fallbackEligible)
 		if !shouldRetry {
 			break
 		}
@@ -97,6 +98,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	fallbackEligible := m.codexFallbackEligible(normalized, retryModel, opts)
 	for attempt := 0; ; attempt++ {
 		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
 		if errExec == nil {
@@ -106,7 +108,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 			return cliproxyexecutor.Response{}, unwrapRequestStopError(errExec)
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, retryModel, maxWait, fallbackEligible)
 		if !shouldRetry {
 			break
 		}
@@ -138,6 +140,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 
 	var lastErr error
 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+	fallbackEligible := m.codexFallbackEligible(normalized, retryModel, opts)
 	for attempt := 0; ; attempt++ {
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
 		if errStream == nil {
@@ -147,7 +150,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			return nil, unwrapRequestStopError(errStream)
 		}
 		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, retryModel, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, retryModel, maxWait, fallbackEligible)
 		if !shouldRetry {
 			break
 		}

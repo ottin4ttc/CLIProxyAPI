@@ -823,7 +823,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string) bool {
 	return false
 }
 
-func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration) (time.Duration, bool) {
+func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration, fallbackEligible bool) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
 	}
@@ -836,6 +836,13 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 	}
 	status := statusCodeFromError(err)
 	if status == http.StatusOK {
+		return 0, false
+	}
+	// A model-wide upstream overload is not fixed by another credential, so a
+	// request that can fall back to a lower tier rotates exactly once and then
+	// stops, leaving the caller free to switch models. Requests that cannot
+	// fall back keep the original unbounded rotation.
+	if fallbackEligible && attempt >= 1 && failureCauseFromError(err) == FailureCauseOverload {
 		return 0, false
 	}
 	if isRequestInvalidError(err) || isRequestStopError(err) {
