@@ -479,6 +479,14 @@ func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 }
 
 func writeResponsesWebsocketError(writer *responsesWebsocketWriter, wsTimelineLog websocketTimelineAppender, errMsg *interfaces.ErrorMessage) ([]byte, error) {
+	payload, errBuild := buildResponsesWebsocketErrorPayload(errMsg)
+	if errBuild != nil {
+		return nil, errBuild
+	}
+	return payload, writeResponsesWebsocketPayload(writer, wsTimelineLog, payload, time.Now())
+}
+
+func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if errMsg != nil {
@@ -548,5 +556,5 @@ func writeResponsesWebsocketError(writer *responsesWebsocketWriter, wsTimelineLo
 		}
 	}
 
-	return payload, writeResponsesWebsocketPayload(writer, wsTimelineLog, payload, time.Now())
+	return payload, nil
 }

@@ -287,6 +287,107 @@ func TestWriteWebsocketCloseForUpstreamErrorMirrorsMessageTooBig(t *testing.T) {
 	}
 }
 
+func TestCloseForUpstreamDisconnectSendsErrorEventBeforeClose(t *testing.T) {
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		writer := newResponsesWebsocketWriter(conn)
+		writer.closeForUpstreamDisconnect(errors.New("upstream websocket read: connection reset by peer"))
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err = conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+
+	msgType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected error event before close, got read error: %v", err)
+	}
+	if msgType != websocket.TextMessage {
+		t.Fatalf("expected text message, got type %d", msgType)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeError {
+		t.Fatalf("expected event type %q, got %q (payload=%s)", wsEventTypeError, got, payload)
+	}
+	if got := gjson.GetBytes(payload, "status").Int(); got != http.StatusBadGateway {
+		t.Fatalf("expected status 502, got %d (payload=%s)", got, payload)
+	}
+	if msg := gjson.GetBytes(payload, "error.message").String(); !strings.Contains(msg, "connection reset by peer") {
+		t.Fatalf("expected error.message to carry the disconnect cause, got %q", msg)
+	}
+
+	_, _, err = conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("expected websocket close error after error event, got %v", err)
+	}
+	if closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("expected close code 1011, got %d", closeErr.Code)
+	}
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
+func TestCloseForUpstreamDisconnectDoesNotWaitForActiveDataWriter(t *testing.T) {
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		writer := newResponsesWebsocketWriter(conn)
+
+		// Holding writeMu models a data writer blocked inside WriteMessage. The
+		// disconnect path must hard-close the socket instead of waiting for it.
+		writer.writeMu.Lock()
+		closeDone := make(chan struct{})
+		go func() {
+			writer.closeForUpstreamDisconnect(errors.New("upstream websocket read: connection reset by peer"))
+			close(closeDone)
+		}()
+
+		select {
+		case <-closeDone:
+			writer.writeMu.Unlock()
+			serverErrCh <- nil
+		case <-time.After(time.Second):
+			writer.writeMu.Unlock()
+			serverErrCh <- errors.New("disconnect close waited behind active data writer")
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err = conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, _, err = conn.ReadMessage(); err == nil {
+		t.Fatal("client read succeeded, want connection closure")
+	}
+	if errServer := <-serverErrCh; errServer != nil {
+		t.Fatalf("server error: %v", errServer)
+	}
+}
+
 func TestResponsesWebsocketWriterCloseDoesNotWaitForActiveDataWriter(t *testing.T) {
 	serverErrCh := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

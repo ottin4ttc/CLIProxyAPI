@@ -139,6 +139,12 @@ func (w *responsesWebsocketWriter) closeForUpstreamError(err error) (bool, error
 	return true, errClose
 }
 
+// closeForUpstreamDisconnect tears the downstream connection down after the
+// upstream websocket died mid-stream. Errors with a dedicated close-code
+// mapping keep their close-frame-only protocol; every other disconnect first
+// sends an {"type":"error"} event so clients that only consume data frames can
+// tell a broken stream from a completed one instead of observing a bare 1006
+// closure and reporting an empty result.
 func (w *responsesWebsocketWriter) closeForUpstreamDisconnect(err error) {
 	if w == nil || w.conn == nil {
 		return
@@ -146,6 +152,29 @@ func (w *responsesWebsocketWriter) closeForUpstreamDisconnect(err error) {
 	if matched, _ := w.closeForUpstreamError(err); matched {
 		return
 	}
+	if !w.closing.CompareAndSwap(false, true) {
+		return
+	}
+	if !w.writeMu.TryLock() {
+		_ = w.conn.Close()
+		return
+	}
+	defer w.writeMu.Unlock()
+
+	if err == nil {
+		err = errors.New("upstream websocket disconnected before response.completed")
+	}
+	if payload, errBuild := buildResponsesWebsocketErrorPayload(&interfaces.ErrorMessage{
+		StatusCode: http.StatusBadGateway,
+		Error:      err,
+	}); errBuild == nil {
+		_ = w.conn.WriteMessage(websocket.TextMessage, payload)
+	}
+	_ = w.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseInternalServerErr, truncateWebsocketCloseReason(err.Error(), wsCloseReasonMaxBytes)),
+		time.Time{},
+	)
 	_ = w.conn.Close()
 }
 
