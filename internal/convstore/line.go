@@ -1,0 +1,39 @@
+package convstore
+
+import "encoding/json"
+
+// Line is one recorded request turn — exactly one JSONL line.
+type Line struct {
+	TS             int64           `json:"ts"`
+	Turn           int             `json:"turn"`
+	Model          string          `json:"model,omitempty"`
+	RequestedModel string          `json:"requested_model,omitempty"`
+	Stream         bool            `json:"stream"`
+	SessionID      string          `json:"session_id,omitempty"`
+	SessionSource  string          `json:"session_source"`
+	Status         string          `json:"status"`
+	ErrorCode      string          `json:"error_code,omitempty"`
+	ErrorMessage   string          `json:"error_message,omitempty"`
+	FinishedAt     int64           `json:"finished_at,omitempty"`
+	TruncatedBody  bool            `json:"truncated_body,omitempty"`
+	Request        json.RawMessage `json:"request"`
+	Response       string          `json:"response,omitempty"`
+}
+
+// Marshal renders the line as compact JSON.
+func (l Line) Marshal() ([]byte, error) {
+	return json.Marshal(l)
+}
+
+// RawRequest wraps a client request body for the Request field: valid JSON
+// is inlined verbatim, anything else is stored as a JSON string.
+func RawRequest(body []byte) json.RawMessage {
+	if json.Valid(body) {
+		return json.RawMessage(body)
+	}
+	quoted, err := json.Marshal(string(body))
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return json.RawMessage(quoted)
+}
