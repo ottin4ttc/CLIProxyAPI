@@ -15,6 +15,7 @@ func streamReq(body string) pluginapi.RequestInterceptRequest {
 
 func chunk(body, chunkData string, index int) pluginapi.StreamChunkInterceptRequest {
 	return pluginapi.StreamChunkInterceptRequest{
+		RequestID:       "req-1",
 		OriginalRequest: []byte(body),
 		Body:            []byte(chunkData),
 		ChunkIndex:      index,
@@ -99,6 +100,7 @@ func TestNonStreamUpstreamErrorRecorded(t *testing.T) {
 	body := `{"messages":[{"role":"user","content":"hi"}]}`
 	s.OnRequestBefore(reqIntercept(body))
 	s.OnResponse(pluginapi.ResponseInterceptRequest{
+		RequestID:       "req-1",
 		OriginalRequest: []byte(body),
 		Body:            []byte(`{"error":{"type":"server_error","message":"The server had an error."}}`),
 		StatusCode:      200,

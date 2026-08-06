@@ -1,7 +1,6 @@
 package convstore
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,8 +36,8 @@ type Store struct {
 	mu        sync.Mutex
 	cfg       Config
 	now       func() time.Time
-	pendings  map[[32]byte][]*pending
-	turns     map[string]int // session file path -> last written turn
+	pendings  map[string]*pending // keyed by pluginapi RequestID
+	turns     map[string]int      // session file path -> last written turn
 	writer    *Writer
 	closeOnce sync.Once
 }
@@ -48,7 +47,7 @@ func New(cfg Config, now func() time.Time) *Store {
 	return &Store{
 		cfg:      cfg,
 		now:      now,
-		pendings: make(map[[32]byte][]*pending),
+		pendings: make(map[string]*pending),
 		turns:    make(map[string]int),
 		writer:   NewWriter(1024),
 	}
@@ -68,10 +67,10 @@ func (s *Store) Shutdown() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		var open []*pending
-		for _, queue := range s.pendings {
-			open = append(open, queue...)
+		for _, p := range s.pendings {
+			open = append(open, p)
 		}
-		s.pendings = make(map[[32]byte][]*pending)
+		s.pendings = make(map[string]*pending)
 		s.mu.Unlock()
 		for _, p := range open {
 			status := "truncated"
@@ -86,13 +85,17 @@ func (s *Store) Shutdown() {
 
 // OnRequestBefore records an incoming client request (pre-auth hook).
 func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
+	id := req.RequestID
+	if id == "" {
+		return
+	}
 	apiKey := APIKeyFromHeaders(req.Headers)
 	nowTS := s.now()
 	utcDate := nowTS.UTC().Format("2006-01-02")
 	sessionKey, sessionID, source := ExtractSession(apiKey, req.Headers, req.Body, utcDate)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	stale := s.pendings[id]
 	maxBody := s.cfg.MaxBodyBytes
 	body, truncated := clip(req.Body, maxBody)
 	p := &pending{
@@ -111,18 +114,19 @@ func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
 			Request:        RawRequest(body),
 		},
 	}
-	hash := sha256.Sum256(req.Body)
-	s.pendings[hash] = append(s.pendings[hash], p)
+	s.pendings[id] = p
+	s.mu.Unlock()
+	if stale != nil {
+		s.finalize(stale, "error")
+	}
 }
 
 // OnResponse completes a non-streaming request (response.intercept_after).
 func (s *Store) OnResponse(req pluginapi.ResponseInterceptRequest) {
-	hash := sha256.Sum256(req.OriginalRequest)
 	s.mu.Lock()
-	p := s.popPendingLocked(hash)
+	p := s.popPendingLocked(req.RequestID)
 	if p == nil {
 		s.mu.Unlock()
-		fmt.Fprintln(os.Stderr, "[conversation-store] response without pending request, dropped")
 		return
 	}
 	body, truncated := clip(req.Body, s.cfg.MaxBodyBytes)
@@ -136,18 +140,14 @@ func (s *Store) OnResponse(req pluginapi.ResponseInterceptRequest) {
 	s.finalize(p, "ok")
 }
 
-// popPendingLocked removes and returns the oldest pending for hash.
-// Caller holds s.mu.
-func (s *Store) popPendingLocked(hash [32]byte) *pending {
-	queue := s.pendings[hash]
-	if len(queue) == 0 {
+// popPendingLocked removes and returns the pending for id. Caller holds s.mu.
+func (s *Store) popPendingLocked(id string) *pending {
+	if id == "" {
 		return nil
 	}
-	p := queue[0]
-	if len(queue) == 1 {
-		delete(s.pendings, hash)
-	} else {
-		s.pendings[hash] = queue[1:]
+	p := s.pendings[id]
+	if p != nil {
+		delete(s.pendings, id)
 	}
 	return p
 }
@@ -214,9 +214,8 @@ func (s *Store) finalize(p *pending, status string) {
 // (response.intercept_stream_chunk). The pending stays queued until an end
 // marker or idle expiry finalizes it.
 func (s *Store) OnStreamChunk(req pluginapi.StreamChunkInterceptRequest) {
-	hash := sha256.Sum256(req.OriginalRequest)
 	s.mu.Lock()
-	p := s.peekStreamLocked(hash)
+	p := s.peekStreamLocked(req.RequestID)
 	if p == nil {
 		s.mu.Unlock()
 		return
@@ -268,28 +267,21 @@ func (s *Store) ExpireIdle() {
 	}
 	var out []expired
 	s.mu.Lock()
-	for hash, queue := range s.pendings {
-		kept := queue[:0]
-		for _, p := range queue {
-			last := p.lastChunk
-			if last.IsZero() {
-				last = p.createdAt
-			}
-			switch {
-			case p.stream && p.ended && nowTS.Sub(last) > streamEndGrace:
-				out = append(out, expired{p, "ok"})
-			case p.stream && nowTS.Sub(last) > idleLimit:
-				out = append(out, expired{p, "truncated"})
-			case !p.stream && nowTS.Sub(p.createdAt) > errorExpiry:
-				out = append(out, expired{p, "error"})
-			default:
-				kept = append(kept, p)
-			}
+	for id, p := range s.pendings {
+		last := p.lastChunk
+		if last.IsZero() {
+			last = p.createdAt
 		}
-		if len(kept) == 0 {
-			delete(s.pendings, hash)
-		} else {
-			s.pendings[hash] = kept
+		switch {
+		case p.stream && p.ended && nowTS.Sub(last) > streamEndGrace:
+			out = append(out, expired{p, "ok"})
+			delete(s.pendings, id)
+		case p.stream && nowTS.Sub(last) > idleLimit:
+			out = append(out, expired{p, "truncated"})
+			delete(s.pendings, id)
+		case !p.stream && nowTS.Sub(p.createdAt) > errorExpiry:
+			out = append(out, expired{p, "error"})
+			delete(s.pendings, id)
 		}
 	}
 	s.mu.Unlock()
@@ -298,13 +290,11 @@ func (s *Store) ExpireIdle() {
 	}
 }
 
-// peekStreamLocked returns the oldest streaming pending for hash without
-// removing it. Caller holds s.mu.
-func (s *Store) peekStreamLocked(hash [32]byte) *pending {
-	for _, p := range s.pendings[hash] {
-		if p.stream {
-			return p
-		}
+// peekStreamLocked returns the streaming pending for id without removing it.
+// Caller holds s.mu.
+func (s *Store) peekStreamLocked(id string) *pending {
+	if p := s.pendings[id]; p != nil && p.stream {
+		return p
 	}
 	return nil
 }

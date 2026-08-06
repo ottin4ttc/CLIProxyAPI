@@ -50,6 +50,7 @@ func readLines(t *testing.T, dir string) []Line {
 
 func reqIntercept(body string) pluginapi.RequestInterceptRequest {
 	return pluginapi.RequestInterceptRequest{
+		RequestID:    "req-1",
 		SourceFormat: "claude",
 		Model:        "claude-sonnet-5",
 		Headers:      http.Header{"Authorization": {"Bearer zhangsan-sk-abcdefgh12345"}},
@@ -62,6 +63,7 @@ func TestNonStreamingRoundTrip(t *testing.T) {
 	body := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
 	s.OnRequestBefore(reqIntercept(body))
 	s.OnResponse(pluginapi.ResponseInterceptRequest{
+		RequestID:       "req-1",
 		OriginalRequest: []byte(body),
 		Body:            []byte(`{"id":"msg_1","content":[{"type":"text","text":"hello"}]}`),
 		StatusCode:      200,
@@ -82,13 +84,17 @@ func TestNonStreamingRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDuplicateBodiesMatchFIFO(t *testing.T) {
+// TestDuplicateRequestIDFinalizesStaleAsError is a regression test for the
+// RequestID-keyed pendings map: a second OnRequestBefore for the same id
+// (host retry) must not silently overwrite the first pending. Instead the
+// stale entry is finalized as "error" so the retry is visible in the log,
+// and the second request/response pair still records normally.
+func TestDuplicateRequestIDFinalizesStaleAsError(t *testing.T) {
 	s, dir, _ := testStore(t)
 	body := `{"messages":[{"role":"user","content":"same"}]}`
 	s.OnRequestBefore(reqIntercept(body))
-	s.OnRequestBefore(reqIntercept(body))
-	s.OnResponse(pluginapi.ResponseInterceptRequest{OriginalRequest: []byte(body), Body: []byte(`{"n":1}`)})
-	s.OnResponse(pluginapi.ResponseInterceptRequest{OriginalRequest: []byte(body), Body: []byte(`{"n":2}`)})
+	s.OnRequestBefore(reqIntercept(body)) // same RequestID: stale pending finalized as "error"
+	s.OnResponse(pluginapi.ResponseInterceptRequest{RequestID: "req-1", OriginalRequest: []byte(body), Body: []byte(`{"n":2}`)})
 	s.Shutdown()
 	lines := readLines(t, dir)
 	if len(lines) != 2 {
@@ -97,11 +103,23 @@ func TestDuplicateBodiesMatchFIFO(t *testing.T) {
 	if lines[0].Turn == lines[1].Turn {
 		t.Fatalf("turns must increment: %+v", lines)
 	}
+	var gotError, gotOK bool
+	for _, l := range lines {
+		switch l.Status {
+		case "error":
+			gotError = true
+		case "ok":
+			gotOK = true
+		}
+	}
+	if !gotError || !gotOK {
+		t.Fatalf("want one error line (stale) and one ok line (completed), got %+v", lines)
+	}
 }
 
 func TestUnmatchedResponseDropped(t *testing.T) {
 	s, dir, _ := testStore(t)
-	s.OnResponse(pluginapi.ResponseInterceptRequest{OriginalRequest: []byte(`{"x":1}`), Body: []byte(`{}`)})
+	s.OnResponse(pluginapi.ResponseInterceptRequest{RequestID: "req-none", OriginalRequest: []byte(`{"x":1}`), Body: []byte(`{}`)})
 	s.Shutdown()
 	if lines := readLines(t, dir); len(lines) != 0 {
 		t.Fatalf("unmatched response must not produce lines: %+v", lines)
@@ -113,7 +131,7 @@ func TestBodyTruncation(t *testing.T) {
 	s.Reconfigure(func() Config { c, _ := ParseConfig(nil); c.DataDir = s.cfg.DataDir; c.MaxBodyBytes = 10; return c }())
 	body := `{"messages":[{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaa"}]}`
 	s.OnRequestBefore(reqIntercept(body))
-	s.OnResponse(pluginapi.ResponseInterceptRequest{OriginalRequest: []byte(body), Body: []byte(`{"long":"bbbbbbbbbbbbbbbbbbbbbb"}`)})
+	s.OnResponse(pluginapi.ResponseInterceptRequest{RequestID: "req-1", OriginalRequest: []byte(body), Body: []byte(`{"long":"bbbbbbbbbbbbbbbbbbbbbb"}`)})
 	s.Shutdown()
 	lines := readLines(t, dir)
 	if len(lines) != 1 || !lines[0].TruncatedBody {
@@ -139,14 +157,15 @@ func TestConcurrentFinalizeSameSessionFile(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			// Same session header (so all turns land in one session file) but
-			// a distinct trailing message so each request body hashes
-			// differently, keeping each goroutine's OnRequestBefore/OnResponse
-			// pair from crossing with another's.
+			// a distinct RequestID, keeping each goroutine's
+			// OnRequestBefore/OnResponse pair from crossing with another's.
 			body := fmt.Sprintf(`{"model":"claude-sonnet-5","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"},{"role":"assistant","content":"marker-%d"}]}`, i)
 			req := reqIntercept(body)
+			req.RequestID = fmt.Sprintf("req-%d", i)
 			req.Headers.Set("X-Claude-Code-Session-Id", "concurrent-session")
 			s.OnRequestBefore(req)
 			s.OnResponse(pluginapi.ResponseInterceptRequest{
+				RequestID:       req.RequestID,
 				OriginalRequest: []byte(body),
 				Body:            []byte(fmt.Sprintf(`{"n":%d}`, i)),
 				StatusCode:      200,
