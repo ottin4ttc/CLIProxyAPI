@@ -179,7 +179,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 
 	s.handlers.UpdateClients(effectiveSDKConfig(cfg))
-	s.handlers.SetPluginHost(convstoreHost(cfg, s.pluginHost))
+	s.handlers.SetPluginHost(convstoreHost(s.configFilePath, s.pluginHost))
 	if s.pluginHost != nil {
 		s.pluginHost.SetModelExecutor(s.handlers)
 		s.pluginHost.SetAuthManager(s.handlers.AuthManager)

@@ -9,9 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
-
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/convstore"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -37,29 +34,29 @@ func (dummyPluginHost) InterceptStreamChunk(context.Context, pluginapi.StreamChu
 	return pluginapi.StreamChunkInterceptResponse{}
 }
 
-// enabledConvstoreConfig builds a config.Config whose plugins.configs.conversation-store
-// block is populated the same way production YAML parsing populates it (via
-// PluginInstanceConfig.UnmarshalYAML, which preserves the raw subtree convstoreHost
-// re-marshals for convstore.ParseConfig). data-dir is always a fresh t.TempDir() so
-// the test never writes into the repo. plugins.enabled is deliberately left false to
-// lock in the "global plugin loader switch is ignored" contract.
-func enabledConvstoreConfig(t *testing.T) *config.Config {
+// writeConvstoreConfig writes body to a fresh temp config file and returns
+// its path.
+func writeConvstoreConfig(t *testing.T, body string) string {
 	t.Helper()
-	src := fmt.Sprintf(`
-plugins:
-  enabled: false
-  configs:
-    conversation-store:
-      enabled: true
-      data-dir: %q
-      max-body-bytes: 1048576
-`, t.TempDir())
-
-	var cfg config.Config
-	if errUnmarshal := yaml.Unmarshal([]byte(src), &cfg); errUnmarshal != nil {
-		t.Fatalf("unmarshal config: %v", errUnmarshal)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
-	return &cfg
+	return path
+}
+
+// enabledConvstoreConfigPath writes a config file whose top-level
+// conversation-store block is enabled, backed by a fresh t.TempDir() data
+// dir so the test never writes into the repo.
+func enabledConvstoreConfigPath(t *testing.T) string {
+	t.Helper()
+	body := fmt.Sprintf(`
+conversation-store:
+  enabled: true
+  data-dir: %q
+  max-body-bytes: 1048576
+`, t.TempDir())
+	return writeConvstoreConfig(t, body)
 }
 
 // TestConvstoreHostLifecycle exercises convstoreHost's enable/reconfigure/disable/
@@ -67,17 +64,18 @@ plugins:
 // run sequentially (no t.Parallel) since they share and mutate that state.
 func TestConvstoreHostLifecycle(t *testing.T) {
 	// Start from a known-clean slate in case another test left state behind.
-	convstoreHost(&config.Config{}, nil)
+	convstoreHost("", nil)
 	t.Cleanup(func() {
-		convstoreHost(&config.Config{}, nil)
+		convstoreHost("", nil)
 	})
 
 	t.Run("disabled config returns inner unchanged", func(t *testing.T) {
+		disabledPath := writeConvstoreConfig(t, "log:\n  level: info\n")
 		var inner handlers.PluginInterceptorHost = dummyPluginHost{}
-		if got := convstoreHost(&config.Config{}, inner); got != inner {
+		if got := convstoreHost(disabledPath, inner); got != inner {
 			t.Fatalf("convstoreHost() = %#v, want inner unchanged", got)
 		}
-		if got := convstoreHost(&config.Config{}, nil); got != nil {
+		if got := convstoreHost(disabledPath, nil); got != nil {
 			t.Fatalf("convstoreHost() with nil inner = %#v, want nil", got)
 		}
 	})
@@ -85,7 +83,7 @@ func TestConvstoreHostLifecycle(t *testing.T) {
 	var firstStore *convstore.Store
 
 	t.Run("enabled config creates a store and returns a hook", func(t *testing.T) {
-		got := convstoreHost(enabledConvstoreConfig(t), dummyPluginHost{})
+		got := convstoreHost(enabledConvstoreConfigPath(t), dummyPluginHost{})
 		if _, ok := got.(*convstore.Hook); !ok {
 			t.Fatalf("convstoreHost() returned %T, want *convstore.Hook", got)
 		}
@@ -99,7 +97,7 @@ func TestConvstoreHostLifecycle(t *testing.T) {
 	})
 
 	t.Run("calling again with enabled config reconfigures the same store", func(t *testing.T) {
-		got := convstoreHost(enabledConvstoreConfig(t), dummyPluginHost{})
+		got := convstoreHost(enabledConvstoreConfigPath(t), dummyPluginHost{})
 		if _, ok := got.(*convstore.Hook); !ok {
 			t.Fatalf("convstoreHost() returned %T, want *convstore.Hook", got)
 		}
@@ -113,8 +111,9 @@ func TestConvstoreHostLifecycle(t *testing.T) {
 	})
 
 	t.Run("disabled config after enabled shuts the store down and resets state", func(t *testing.T) {
+		disabledPath := writeConvstoreConfig(t, "log:\n  level: info\n")
 		var inner handlers.PluginInterceptorHost = dummyPluginHost{}
-		if got := convstoreHost(&config.Config{}, inner); got != inner {
+		if got := convstoreHost(disabledPath, inner); got != inner {
 			t.Fatalf("convstoreHost() = %#v, want inner unchanged", got)
 		}
 
@@ -129,13 +128,13 @@ func TestConvstoreHostLifecycle(t *testing.T) {
 		}
 
 		// Calling disable again must not panic (no double-close of stop channel).
-		if got := convstoreHost(&config.Config{}, inner); got != inner {
+		if got := convstoreHost(disabledPath, inner); got != inner {
 			t.Fatalf("repeated disable: convstoreHost() = %#v, want inner unchanged", got)
 		}
 	})
 
 	t.Run("re-enable after disable creates a new store instance", func(t *testing.T) {
-		got := convstoreHost(enabledConvstoreConfig(t), dummyPluginHost{})
+		got := convstoreHost(enabledConvstoreConfigPath(t), dummyPluginHost{})
 		if _, ok := got.(*convstore.Hook); !ok {
 			t.Fatalf("convstoreHost() returned %T, want *convstore.Hook", got)
 		}
@@ -152,20 +151,17 @@ func TestConvstoreHostLifecycle(t *testing.T) {
 	})
 }
 
-// TestConvstoreShutdown proves the parity fix for process-exit flushing: once
-// enabled, a recorded turn must land on disk after convstoreShutdown() (not
-// just after an explicit store.Shutdown() call from a test), state must be
-// nil'd out, and a second call must be a no-op rather than a double-close
-// panic.
-func TestConvstoreShutdown(t *testing.T) {
-	// Start from a known-clean slate in case another test left state behind.
-	convstoreHost(&config.Config{}, nil)
+// TestConvstoreHostPluginKeyIgnored locks in the decoupling from the plugin
+// system: a config file whose only conversation-store mention is under
+// plugins.configs (the old gate) must NOT enable native recording, because
+// the top-level conversation-store block is absent.
+func TestConvstoreHostPluginKeyIgnored(t *testing.T) {
+	convstoreHost("", nil)
 	t.Cleanup(func() {
-		convstoreHost(&config.Config{}, nil)
+		convstoreHost("", nil)
 	})
 
-	dataDir := t.TempDir()
-	src := fmt.Sprintf(`
+	path := writeConvstoreConfig(t, fmt.Sprintf(`
 plugins:
   enabled: false
   configs:
@@ -173,13 +169,63 @@ plugins:
       enabled: true
       data-dir: %q
       max-body-bytes: 1048576
-`, dataDir)
-	var cfg config.Config
-	if errUnmarshal := yaml.Unmarshal([]byte(src), &cfg); errUnmarshal != nil {
-		t.Fatalf("unmarshal config: %v", errUnmarshal)
+`, t.TempDir()))
+
+	var inner handlers.PluginInterceptorHost = dummyPluginHost{}
+	got := convstoreHost(path, inner)
+	if got != inner {
+		t.Fatalf("convstoreHost() = %#v, want inner unchanged (plugin key must not gate native recording)", got)
 	}
 
-	got := convstoreHost(&cfg, dummyPluginHost{})
+	convstoreState.mu.Lock()
+	store := convstoreState.store
+	convstoreState.mu.Unlock()
+	if store != nil {
+		t.Fatalf("convstoreState.store = %p, want nil: plugins.configs.conversation-store.enabled must not create a store", store)
+	}
+}
+
+// TestConvstoreHostMissingPath covers passthrough with no panic for an empty
+// path and a path that does not exist on disk.
+func TestConvstoreHostMissingPath(t *testing.T) {
+	convstoreHost("", nil)
+	t.Cleanup(func() {
+		convstoreHost("", nil)
+	})
+
+	var inner handlers.PluginInterceptorHost = dummyPluginHost{}
+
+	if got := convstoreHost("", inner); got != inner {
+		t.Fatalf("convstoreHost(\"\") = %#v, want inner unchanged", got)
+	}
+
+	nonexistent := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	if got := convstoreHost(nonexistent, inner); got != inner {
+		t.Fatalf("convstoreHost(nonexistent) = %#v, want inner unchanged", got)
+	}
+}
+
+// TestConvstoreShutdown proves the parity fix for process-exit flushing: once
+// enabled, a recorded turn must land on disk after convstoreShutdown() (not
+// just after an explicit store.Shutdown() call from a test), state must be
+// nil'd out, and a second call must be a no-op rather than a double-close
+// panic.
+func TestConvstoreShutdown(t *testing.T) {
+	// Start from a known-clean slate in case another test left state behind.
+	convstoreHost("", nil)
+	t.Cleanup(func() {
+		convstoreHost("", nil)
+	})
+
+	dataDir := t.TempDir()
+	path := writeConvstoreConfig(t, fmt.Sprintf(`
+conversation-store:
+  enabled: true
+  data-dir: %q
+  max-body-bytes: 1048576
+`, dataDir))
+
+	got := convstoreHost(path, dummyPluginHost{})
 	hook, ok := got.(*convstore.Hook)
 	if !ok {
 		t.Fatalf("convstoreHost() returned %T, want *convstore.Hook", got)
