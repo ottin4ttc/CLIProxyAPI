@@ -76,3 +76,19 @@ func convstoreHost(cfg *config.Config, inner handlers.PluginInterceptorHost) han
 	}
 	return convstoreHookFor(inner)
 }
+
+// convstoreShutdown flushes and stops the native conversation store, if
+// one is running. Called from Server.Stop so queued JSONL appends drain
+// before process exit.
+func convstoreShutdown() {
+	convstoreState.mu.Lock()
+	defer convstoreState.mu.Unlock()
+	if convstoreState.store == nil {
+		return
+	}
+	close(convstoreState.stop)
+	convstoreState.store.Shutdown()
+	convstoreState.store = nil
+	convstoreState.stop = nil
+	log.Info("convstore: native conversation recording stopped")
+}

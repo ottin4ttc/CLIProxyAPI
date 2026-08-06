@@ -83,3 +83,15 @@ func TestCompleteFinalizesStream(t *testing.T) {
 	st.Shutdown() // flush writer
 	assertSingleLineStatus(t, st, "ok")
 }
+
+func TestCompleteRejectedFinalizesAsError(t *testing.T) {
+	st := newTestStore(t)
+	h := NewHook(st, nil)
+	ctx := context.Background()
+	h.InterceptRequestBeforeAuth(ctx, pluginapi.RequestInterceptRequest{
+		RequestID: "r2", Body: []byte(`{"model":"m"}`),
+	})
+	h.CompleteRequest(ctx, pluginapi.RequestCompletion{RequestID: "r2", Outcome: pluginapi.RequestCompletionRejected})
+	st.Shutdown() // flush writer
+	assertSingleLineStatus(t, st, "error")
+}

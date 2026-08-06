@@ -1,6 +1,6 @@
-// Package store implements conversation recording for the CLIProxyAPI
-// conversation-store plugin: session keying, request/response correlation,
-// JSONL persistence, archiving, and retention.
+// Package convstore implements conversation recording for CLIProxyAPI:
+// session keying, request/response correlation, JSONL persistence,
+// archiving, and retention.
 package convstore
 
 import "gopkg.in/yaml.v3"

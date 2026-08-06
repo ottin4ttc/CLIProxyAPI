@@ -3,6 +3,10 @@ package api
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -146,4 +150,91 @@ func TestConvstoreHostLifecycle(t *testing.T) {
 			t.Fatal("convstoreState.store was resurrected: expected a new instance after Shutdown, got the same pointer")
 		}
 	})
+}
+
+// TestConvstoreShutdown proves the parity fix for process-exit flushing: once
+// enabled, a recorded turn must land on disk after convstoreShutdown() (not
+// just after an explicit store.Shutdown() call from a test), state must be
+// nil'd out, and a second call must be a no-op rather than a double-close
+// panic.
+func TestConvstoreShutdown(t *testing.T) {
+	// Start from a known-clean slate in case another test left state behind.
+	convstoreHost(&config.Config{}, nil)
+	t.Cleanup(func() {
+		convstoreHost(&config.Config{}, nil)
+	})
+
+	dataDir := t.TempDir()
+	src := fmt.Sprintf(`
+plugins:
+  enabled: false
+  configs:
+    conversation-store:
+      enabled: true
+      data-dir: %q
+      max-body-bytes: 1048576
+`, dataDir)
+	var cfg config.Config
+	if errUnmarshal := yaml.Unmarshal([]byte(src), &cfg); errUnmarshal != nil {
+		t.Fatalf("unmarshal config: %v", errUnmarshal)
+	}
+
+	got := convstoreHost(&cfg, dummyPluginHost{})
+	hook, ok := got.(*convstore.Hook)
+	if !ok {
+		t.Fatalf("convstoreHost() returned %T, want *convstore.Hook", got)
+	}
+
+	ctx := context.Background()
+	hook.InterceptRequestBeforeAuth(ctx, pluginapi.RequestInterceptRequest{
+		RequestID: "shutdown-1",
+		Model:     "m",
+		Headers:   map[string][]string{"Authorization": {"Bearer test-key"}},
+		Body:      []byte(`{"model":"m"}`),
+	})
+	hook.InterceptResponse(ctx, pluginapi.ResponseInterceptRequest{
+		RequestID: "shutdown-1",
+		Body:      []byte(`{"ok":true}`),
+	})
+
+	convstoreShutdown()
+
+	convstoreState.mu.Lock()
+	store, stop := convstoreState.store, convstoreState.stop
+	convstoreState.mu.Unlock()
+	if store != nil {
+		t.Fatalf("convstoreState.store = %p, want nil after shutdown", store)
+	}
+	if stop != nil {
+		t.Fatal("convstoreState.stop is non-nil after shutdown")
+	}
+
+	// The recorded turn must have made it to disk: convstoreShutdown() blocks
+	// on the writer draining its queue, so this file must exist by now.
+	var found []string
+	errWalk := filepath.WalkDir(dataDir, func(path string, d fs.DirEntry, errWalk error) error {
+		if errWalk != nil {
+			return errWalk
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".jsonl") {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if errWalk != nil {
+		t.Fatalf("walk data dir: %v", errWalk)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %d jsonl files under %s, want 1: %v", len(found), dataDir, found)
+	}
+	data, errRead := os.ReadFile(found[0])
+	if errRead != nil {
+		t.Fatalf("read jsonl: %v", errRead)
+	}
+	if !strings.Contains(string(data), `"status":"ok"`) {
+		t.Fatalf("recorded line missing status ok: %s", data)
+	}
+
+	// Second call must be a no-op, not a double-close panic.
+	convstoreShutdown()
 }

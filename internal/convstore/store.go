@@ -168,7 +168,7 @@ func (s *Store) OnRequestComplete(completion pluginapi.RequestCompletion) {
 	switch completion.Outcome {
 	case pluginapi.RequestCompletionCanceled:
 		status = "truncated"
-	case pluginapi.RequestCompletionFailed:
+	case pluginapi.RequestCompletionFailed, pluginapi.RequestCompletionRejected:
 		status = "error"
 	}
 	s.finalize(p, status)
