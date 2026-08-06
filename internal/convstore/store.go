@@ -154,6 +154,26 @@ func (s *Store) OnResponse(req pluginapi.ResponseInterceptRequest) {
 	s.finalize(p, "ok")
 }
 
+// OnRequestComplete finalizes the pending for a finished request using the
+// host lifecycle outcome. Requests already finalized (non-stream OnResponse
+// path) are a no-op.
+func (s *Store) OnRequestComplete(completion pluginapi.RequestCompletion) {
+	s.mu.Lock()
+	p := s.popPendingLocked(completion.RequestID)
+	s.mu.Unlock()
+	if p == nil {
+		return
+	}
+	status := "ok"
+	switch completion.Outcome {
+	case pluginapi.RequestCompletionCanceled:
+		status = "truncated"
+	case pluginapi.RequestCompletionFailed:
+		status = "error"
+	}
+	s.finalize(p, status)
+}
+
 // popPendingLocked removes and returns the pending for id. Caller holds s.mu.
 func (s *Store) popPendingLocked(id string) *pending {
 	if id == "" {
