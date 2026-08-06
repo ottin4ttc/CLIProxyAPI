@@ -18,6 +18,10 @@ type Line struct {
 	TruncatedBody  bool            `json:"truncated_body,omitempty"`
 	Request        json.RawMessage `json:"request"`
 	Response       string          `json:"response,omitempty"`
+	// RequestHeaders holds the downstream request headers with sensitive
+	// values masked (Authorization keeps its scheme prefix, api-key/token
+	// style headers become "abcd...wxyz").
+	RequestHeaders map[string]string `json:"request_headers,omitempty"`
 }
 
 // Marshal renders the line as compact JSON.

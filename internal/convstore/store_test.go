@@ -48,6 +48,32 @@ func readLines(t *testing.T, dir string) []Line {
 	return lines
 }
 
+func readSingleLine(t *testing.T, st *Store) map[string]any {
+	t.Helper()
+	var rawLine string
+	_ = filepath.Walk(st.cfg.DataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return err
+		}
+		data, _ := os.ReadFile(path)
+		for _, raw := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if raw != "" {
+				rawLine = raw
+				break
+			}
+		}
+		return nil
+	})
+	if rawLine == "" {
+		t.Fatalf("no JSONL line found")
+	}
+	var line map[string]any
+	if err := json.Unmarshal([]byte(rawLine), &line); err != nil {
+		t.Fatalf("bad line %q: %v", rawLine, err)
+	}
+	return line
+}
+
 func reqIntercept(body string) pluginapi.RequestInterceptRequest {
 	return pluginapi.RequestInterceptRequest{
 		RequestID:    "req-1",
@@ -203,5 +229,26 @@ func TestConcurrentFinalizeSameSessionFile(t *testing.T) {
 	}
 	if len(seen) != n {
 		t.Fatalf("want %d distinct turns, got %d", n, len(seen))
+	}
+}
+
+func TestRequestHeadersMaskedAndRecorded(t *testing.T) {
+	st := New(func() Config { c, _ := ParseConfig(nil); c.DataDir = t.TempDir(); return c }(), func() time.Time { return time.Unix(1700000000, 0) })
+	t.Cleanup(st.Shutdown)
+	h := http.Header{
+		"Authorization": []string{"Bearer sk-verysecretkey1234"},
+		"User-Agent":    []string{"codex-cli/0.147.0"},
+	}
+	st.OnRequestBefore(pluginapi.RequestInterceptRequest{RequestID: "r1", Headers: h, Body: []byte(`{}`)})
+	st.OnResponse(pluginapi.ResponseInterceptRequest{RequestID: "r1", Body: []byte(`{"ok":true}`)})
+	st.Shutdown()
+	line := readSingleLine(t, st)
+	headers := line["request_headers"].(map[string]any)
+	if headers["User-Agent"] != "codex-cli/0.147.0" {
+		t.Fatalf("plain header altered: %v", headers["User-Agent"])
+	}
+	auth := headers["Authorization"].(string)
+	if auth == "Bearer sk-verysecretkey1234" || !strings.HasPrefix(auth, "Bearer ") {
+		t.Fatalf("authorization not masked correctly: %q", auth)
 	}
 }

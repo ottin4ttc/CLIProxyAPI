@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -98,6 +99,18 @@ func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
 	stale := s.pendings[id]
 	maxBody := s.cfg.MaxBodyBytes
 	body, truncated := clip(req.Body, maxBody)
+
+	var maskedHeaders map[string]string
+	if len(req.Headers) > 0 {
+		maskedHeaders = make(map[string]string, len(req.Headers))
+		for key, values := range req.Headers {
+			if len(values) == 0 {
+				continue
+			}
+			maskedHeaders[key] = util.MaskSensitiveHeaderValue(key, values[0])
+		}
+	}
+
 	p := &pending{
 		createdAt:  nowTS,
 		keyLabel:   KeyLabel(apiKey),
@@ -112,6 +125,7 @@ func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
 			SessionSource:  source,
 			TruncatedBody:  truncated,
 			Request:        RawRequest(body),
+			RequestHeaders: maskedHeaders,
 		},
 	}
 	s.pendings[id] = p
