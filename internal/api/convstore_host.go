@@ -56,6 +56,15 @@ func convstoreDisableLocked() {
 // plugins.enabled dylib loader switch) have no bearing on it. Called from
 // both initial server construction and config hot reload; safe to call
 // repeatedly.
+//
+// Limitations:
+//   - The gate reads the config file directly (config.Config drops unknown
+//     top-level keys), so deployments that receive their config pushed from
+//     Home without a local config.yaml on disk cannot enable native recording
+//     — the gate fails closed.
+//   - The conversation-store block is re-marshaled standalone before parsing,
+//     so it must be self-contained: YAML anchors/merge keys referencing nodes
+//     outside the block fail to resolve and the gate fails closed.
 func convstoreHost(configFilePath string, inner handlers.PluginInterceptorHost) handlers.PluginInterceptorHost {
 	convstoreState.mu.Lock()
 	defer convstoreState.mu.Unlock()
