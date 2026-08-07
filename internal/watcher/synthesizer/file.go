@@ -219,6 +219,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 		}
 	}
+	// Read bucket from auth file.
+	if rawBucket, ok := metadata[coreauth.AttributeBucket]; ok {
+		if bucket, isStr := rawBucket.(string); isStr {
+			if trimmed := strings.TrimSpace(bucket); trimmed != "" {
+				a.Attributes[coreauth.AttributeBucket] = trimmed
+			}
+		}
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")

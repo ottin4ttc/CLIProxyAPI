@@ -788,3 +788,80 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestFileSynthesizer_Synthesize_BucketParsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		bucket   any
+		want     string
+		hasValue bool
+	}{
+		{
+			name:     "plain value",
+			bucket:   "anon",
+			want:     "anon",
+			hasValue: true,
+		},
+		{
+			name:     "string with spaces",
+			bucket:   "  anon  ",
+			want:     "anon",
+			hasValue: true,
+		},
+		{
+			name:     "blank is untagged",
+			bucket:   "   ",
+			hasValue: false,
+		},
+		{
+			name:     "non-string ignored",
+			bucket:   42,
+			hasValue: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			authData := map[string]any{
+				"type":   "codex",
+				"bucket": tt.bucket,
+			}
+			data, _ := json.Marshal(authData)
+			errWriteFile := os.WriteFile(filepath.Join(tempDir, "auth.json"), data, 0644)
+			if errWriteFile != nil {
+				t.Fatalf("failed to write auth file: %v", errWriteFile)
+			}
+
+			synth := NewFileSynthesizer()
+			ctx := &SynthesisContext{
+				Config:      &config.Config{},
+				AuthDir:     tempDir,
+				Now:         time.Now(),
+				IDGenerator: NewStableIDGenerator(),
+			}
+
+			auths, errSynthesize := synth.Synthesize(ctx)
+			if errSynthesize != nil {
+				t.Fatalf("unexpected error: %v", errSynthesize)
+			}
+			if len(auths) != 1 {
+				t.Fatalf("expected 1 auth, got %d", len(auths))
+			}
+
+			value, ok := auths[0].Attributes[coreauth.AttributeBucket]
+			if tt.hasValue {
+				if !ok {
+					t.Fatal("expected bucket attribute to be set")
+				}
+				if value != tt.want {
+					t.Fatalf("expected bucket %q, got %q", tt.want, value)
+				}
+				return
+			}
+			if ok {
+				t.Fatalf("expected bucket attribute to be absent, got %q", value)
+			}
+		})
+	}
+}

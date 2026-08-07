@@ -418,6 +418,17 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	// Expose bucket from Attributes (set by synthesizer from JSON "bucket" field).
+	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).
+	if bucket := strings.TrimSpace(authAttribute(auth, coreauth.AttributeBucket)); bucket != "" {
+		entry[coreauth.AttributeBucket] = bucket
+	} else if auth.Metadata != nil {
+		if rawBucket, ok := auth.Metadata[coreauth.AttributeBucket].(string); ok {
+			if trimmed := strings.TrimSpace(rawBucket); trimmed != "" {
+				entry[coreauth.AttributeBucket] = trimmed
+			}
+		}
+	}
 	if weight, ok := authWeightValue(auth); ok {
 		entry[coreauth.AttributeWeight] = weight
 	}
