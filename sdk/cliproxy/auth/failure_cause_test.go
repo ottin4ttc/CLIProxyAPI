@@ -95,11 +95,21 @@ func (e causeCarryingError) RetryAfter() *time.Duration {
 }
 
 func TestCodexNativeRequest(t *testing.T) {
+	// The Responses route identifies the wire protocol, not the client: plain
+	// OpenAI SDK callers reach it too, and they get no Codex CLI treatment.
 	responsesOpts := cliproxyexecutor.Options{
 		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
 	}
-	if !codexNativeRequest(responsesOpts) {
-		t.Fatal("/v1/responses must count as a native Codex request")
+	if codexNativeRequest(responsesOpts) {
+		t.Fatal("/v1/responses without Originator must not count as a native Codex request")
+	}
+
+	responsesOriginatorOpts := cliproxyexecutor.Options{
+		Headers:  http.Header{"Originator": {"codex_cli_rs"}},
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
+	}
+	if !codexNativeRequest(responsesOriginatorOpts) {
+		t.Fatal("a Codex CLI on /v1/responses must still count as native through its Originator header")
 	}
 
 	originatorOpts := cliproxyexecutor.Options{
@@ -161,7 +171,13 @@ func TestCodexFallbackEligible(t *testing.T) {
 	translated := cliproxyexecutor.Options{
 		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/chat/completions"},
 	}
+	// A plain SDK caller on the Responses route is a third-party client, not a
+	// Codex CLI, so it must be degraded like any other translated request.
+	responses := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
+	}
 	native := cliproxyexecutor.Options{
+		Headers:  http.Header{"Originator": {"codex_cli_rs"}},
 		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
 	}
 	backendAPINative := cliproxyexecutor.Options{
@@ -171,8 +187,11 @@ func TestCodexFallbackEligible(t *testing.T) {
 	if !manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", translated) {
 		t.Fatal("translated codex request with a configured chain must be eligible")
 	}
+	if !manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", responses) {
+		t.Fatal("third-party Responses request without Originator must be eligible")
+	}
 	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", native) {
-		t.Fatal("native Codex protocol request must never be eligible")
+		t.Fatal("native Codex CLI request must never be eligible")
 	}
 	if manager.codexFallbackEligible([]string{"codex"}, "gpt-5.6-sol", backendAPINative) {
 		t.Fatal("native Codex chatgpt_base_url alias request must never be eligible")

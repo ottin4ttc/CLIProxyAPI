@@ -224,15 +224,37 @@ func TestExecuteDoesNotFallBackForNativeCodexProtocol(t *testing.T) {
 		"gpt-5.6-sol", "gpt-5.6-terra")
 
 	nativeOpts := cliproxyexecutor.Options{
+		Headers:  http.Header{"Originator": {"codex_cli_rs"}},
 		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
 	}
 	if _, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, nativeOpts); errExecute == nil {
-		t.Fatal("a native Codex Responses request must not be silently degraded to another model")
+		t.Fatal("a native Codex CLI request must not be silently degraded to another model")
 	}
 	for _, model := range executor.seen {
 		if model != "gpt-5.6-sol" {
 			t.Fatalf("executor ran %q for a native Codex request, want only gpt-5.6-sol", model)
 		}
+	}
+}
+
+// TestExecuteFallsBackForThirdPartyResponsesClient locks in the distinction the
+// Originator header draws: the Responses route alone is the wire protocol, and
+// a plain SDK client speaking it gets degraded like any other caller.
+func TestExecuteFallsBackForThirdPartyResponsesClient(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-6b", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	responsesOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestPathMetadataKey: "/v1/responses"},
+	}
+	resp, errExecute := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, responsesOpts)
+	if errExecute != nil {
+		t.Fatalf("execute: %v", errExecute)
+	}
+	if got := responseModel(t, resp.Payload); got != "gpt-5.6-terra" {
+		t.Fatalf("response model = %q, want gpt-5.6-terra", got)
 	}
 }
 

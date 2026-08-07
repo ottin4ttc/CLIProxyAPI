@@ -252,7 +252,10 @@ codex:
   optimize-multi-agent-v2: false
   # Ordered fallback tiers used when the upstream reports a model as overloaded
   # or at capacity. Quota exhaustion (usage_limit_reached) never triggers this;
-  # that case rotates credentials as before. Omit to disable.
+  # that case rotates credentials as before. Official Codex clients (requests
+  # carrying an Originator header, or hitting /backend-api/codex/*) are never
+  # degraded, because they retry overloads themselves; every other client is,
+  # whichever route it uses. Omit to disable.
   # model-fallback:
   #   - from: gpt-5.6-sol
   #     to: [gpt-5.6-terra, gpt-5.6-luna]

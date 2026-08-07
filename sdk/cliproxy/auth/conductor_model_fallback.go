@@ -30,20 +30,24 @@ func requestPathFromOptions(opts cliproxyexecutor.Options) string {
 	}
 }
 
-// codexNativeRequest reports whether the inbound request speaks Codex's own
-// Responses protocol or came from an official Codex client. This covers both
-// the standard "/v1/responses" route group and the "/backend-api/codex"
-// route group, which is the chatgpt_base_url-compatible alias a real Codex
-// CLI hits when pointed at this proxy (see internal/api/server_routes.go).
-// Those clients retry upstream overloads themselves and carry conversation
-// state across turns, so this proxy must neither cap their credential
-// rotation nor rewrite the model they asked for.
+// codexNativeRequest reports whether the inbound request came from an official
+// Codex client. Two markers identify one: the "Originator" header a real Codex
+// CLI sends on every request, and the "/backend-api/codex" route group, which
+// is the chatgpt_base_url-compatible alias only such a client is pointed at
+// (see internal/api/server_routes.go). Those clients retry upstream overloads
+// themselves and carry conversation state across turns, so this proxy must
+// neither cap their credential rotation nor rewrite the model they asked for.
+//
+// The "/v1/responses" route is deliberately not a marker. It identifies the
+// wire protocol, not the client: third-party callers reach it through plain
+// OpenAI SDKs, without the Codex CLI's self-retry or cross-turn state, and
+// gating on the path denied them the degrade this feature exists to provide. A
+// Codex CLI pointed at that route still carries the Originator header.
 func codexNativeRequest(opts cliproxyexecutor.Options) bool {
 	if originator := strings.TrimSpace(opts.Headers.Get("Originator")); originator != "" {
 		return true
 	}
-	path := requestPathFromOptions(opts)
-	return strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/backend-api/codex")
+	return strings.HasPrefix(requestPathFromOptions(opts), "/backend-api/codex")
 }
 
 // hasCodexProvider reports whether codex is among the candidate providers.
