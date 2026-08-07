@@ -369,3 +369,63 @@ func TestPatchAuthFileFields_RejectsInvalidWeights(t *testing.T) {
 		}
 	}
 }
+
+func TestPatchAuthFileFields_BucketSetAndClear(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	record := &coreauth.Auth{
+		ID:       "codex.json",
+		FileName: "codex.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": "/tmp/codex.json",
+		},
+		Metadata: map[string]any{
+			"type": "codex",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+		t.Fatalf("failed to register auth record: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	patch := func(t *testing.T, body string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx.Request = req
+		h.PatchAuthFileFields(ctx)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+		}
+	}
+
+	patch(t, `{"name":"codex.json","bucket":"  anon  "}`)
+	updated, ok := manager.GetByID("codex.json")
+	if !ok || updated == nil {
+		t.Fatal("expected auth record after set")
+	}
+	if got := updated.Attributes[coreauth.AttributeBucket]; got != "anon" {
+		t.Fatalf("expected trimmed bucket attribute %q, got %q", "anon", got)
+	}
+	if got, _ := updated.Metadata[coreauth.AttributeBucket].(string); strings.TrimSpace(got) != "anon" {
+		t.Fatalf("expected bucket metadata %q, got %q", "anon", got)
+	}
+
+	patch(t, `{"name":"codex.json","bucket":""}`)
+	cleared, ok := manager.GetByID("codex.json")
+	if !ok || cleared == nil {
+		t.Fatal("expected auth record after clear")
+	}
+	if got, present := cleared.Attributes[coreauth.AttributeBucket]; present {
+		t.Fatalf("expected bucket attribute removed, got %q", got)
+	}
+	if _, present := cleared.Metadata[coreauth.AttributeBucket]; present {
+		t.Fatal("expected bucket metadata key removed")
+	}
+}

@@ -454,6 +454,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["note"]; ok {
 		syncAuthFileNoteAttribute(auth)
 	}
+	if _, ok := touchedRoots[coreauth.AttributeBucket]; ok {
+		syncAuthFileBucketAttribute(auth)
+	}
 	if _, ok := touchedRoots["websockets"]; ok {
 		syncAuthFileWebsocketsAttribute(auth)
 	}
@@ -551,6 +554,32 @@ func syncAuthFileNoteAttribute(auth *coreauth.Auth) {
 		return
 	}
 	auth.Attributes["note"] = note
+}
+
+// syncAuthFileBucketAttribute mirrors the auth file's bucket tag into Attributes.
+// Unlike note, an empty value removes the metadata key as well, so a cleared tag
+// leaves no "bucket" field behind in the written auth JSON.
+func syncAuthFileBucketAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	bucket, ok := auth.Metadata[coreauth.AttributeBucket].(string)
+	if !ok {
+		delete(auth.Attributes, coreauth.AttributeBucket)
+		delete(auth.Metadata, coreauth.AttributeBucket)
+		return
+	}
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		delete(auth.Attributes, coreauth.AttributeBucket)
+		delete(auth.Metadata, coreauth.AttributeBucket)
+		return
+	}
+	auth.Attributes[coreauth.AttributeBucket] = bucket
+	auth.Metadata[coreauth.AttributeBucket] = bucket
 }
 
 func syncAuthFileWebsocketsAttribute(auth *coreauth.Auth) {
