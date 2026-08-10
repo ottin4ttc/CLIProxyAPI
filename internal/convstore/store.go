@@ -18,6 +18,7 @@ type pending struct {
 	line          Line
 	keyLabel      string
 	sessionKey    string
+	requestID     string
 	stream        bool
 	streamOpen    bool
 	ended         bool // end marker seen; flushed as "ok" after streamEndGrace
@@ -38,7 +39,6 @@ type Store struct {
 	cfg       Config
 	now       func() time.Time
 	pendings  map[string]*pending // keyed by pluginapi RequestID
-	turns     map[string]int      // session file path -> last written turn
 	writer    *Writer
 	closeOnce sync.Once
 }
@@ -49,7 +49,6 @@ func New(cfg Config, now func() time.Time) *Store {
 		cfg:      cfg,
 		now:      now,
 		pendings: make(map[string]*pending),
-		turns:    make(map[string]int),
 		writer:   NewWriter(1024),
 	}
 }
@@ -115,6 +114,7 @@ func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
 		createdAt:  nowTS,
 		keyLabel:   KeyLabel(apiKey),
 		sessionKey: sessionKey,
+		requestID:  id,
 		stream:     req.Stream,
 		line: Line{
 			TS:             nowTS.UnixMilli(),
@@ -186,52 +186,16 @@ func (s *Store) popPendingLocked(id string) *pending {
 	return p
 }
 
-// finalize assigns the turn number and enqueues the completed line.
-//
-// Turn numbers are unique and strictly monotonic per session file, but the
-// seeding I/O below and the writer's actual disk append both happen outside
-// s.mu, so under concurrent finalizes for the same file the physical line
-// order on disk is not guaranteed to match turn order. Consumers must order
-// lines by the "turn" field, not by file position.
+// finalize writes the completed record as its own file under the session
+// directory.
 func (s *Store) finalize(p *pending, status string) {
 	s.mu.Lock()
-	path := s.sessionPathLocked(p)
-	turn, seeded := s.turns[path]
-	s.mu.Unlock()
-
-	if !seeded {
-		// Seeding (RecoverTornLine + CountLines) does synchronous disk I/O.
-		// Run it outside s.mu so a session file's first touch never blocks
-		// OnRequestBefore/OnResponse for every other session. Two
-		// goroutines may race to seed the same brand-new path here; both
-		// operations are read-only plus a tail-truncate, so running them
-		// twice concurrently is harmless.
-		if err := RecoverTornLine(path); err != nil {
-			fmt.Fprintf(os.Stderr, "[conversation-store] recover %s: %v\n", path, err)
-		}
-		n, err := CountLines(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[conversation-store] count lines %s: %v\n", path, err)
-		} else {
-			turn = n
-		}
-	}
-
-	s.mu.Lock()
-	if seededTurn, ok := s.turns[path]; ok {
-		// Another goroutine seeded (and possibly advanced) this path while
-		// we were doing unlocked I/O; our count is stale, so use the
-		// authoritative map value instead.
-		turn = seededTurn
-	}
-	turn++
-	s.turns[path] = turn
+	dir := s.sessionDirLocked(p)
 	s.mu.Unlock()
 
 	if status == "ok" && (p.line.ErrorMessage != "" || p.line.ErrorCode != "") {
 		status = "upstream_error"
 	}
-	p.line.Turn = turn
 	p.line.Status = status
 	p.line.FinishedAt = s.now().UnixMilli()
 	p.line.Response = string(p.response)
@@ -241,7 +205,7 @@ func (s *Store) finalize(p *pending, status string) {
 		fmt.Fprintf(os.Stderr, "[conversation-store] marshal line: %v\n", err)
 		return
 	}
-	s.writer.Append(path, raw)
+	s.writer.Write(dir, requestFileName(p.line.TS, p.requestID), raw)
 }
 
 // OnStreamChunk accumulates one downstream stream chunk
@@ -333,9 +297,16 @@ func (s *Store) peekStreamLocked(id string) *pending {
 	return nil
 }
 
-// sessionPathLocked builds the target file path. Caller holds s.mu.
-func (s *Store) sessionPathLocked(p *pending) string {
-	return filepath.Join(s.cfg.DataDir, p.keyLabel, p.sessionKey+".jsonl")
+// sessionDirLocked builds the session directory. Caller holds s.mu.
+func (s *Store) sessionDirLocked(p *pending) string {
+	return filepath.Join(s.cfg.DataDir, p.keyLabel, p.sessionKey)
+}
+
+// requestFileName names one record's file. The millisecond timestamp is
+// zero-padded to 13 digits so lexical order matches chronological order,
+// which is what the archiver relies on when concatenating a directory.
+func requestFileName(tsMillis int64, requestID string) string {
+	return fmt.Sprintf("%013d-%s.jsonl", tsMillis, sanitizeName(requestID))
 }
 
 // clip bounds payload size, reporting whether it was cut.

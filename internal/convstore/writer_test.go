@@ -2,6 +2,7 @@ package convstore
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestLineMarshalFieldNames(t *testing.T) {
-	l := Line{TS: 5, Turn: 1, Stream: true, SessionSource: "fingerprint",
+	l := Line{TS: 5, Stream: true, SessionSource: "fingerprint",
 		Status: "ok", Request: json.RawMessage(`{"a":1}`), Response: "data: x\n"}
 	raw, err := l.Marshal()
 	if err != nil {
@@ -19,7 +20,7 @@ func TestLineMarshalFieldNames(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ts", "turn", "stream", "session_source", "status", "request", "response"} {
+	for _, want := range []string{"ts", "stream", "session_source", "status", "request", "response"} {
 		if _, ok := m[want]; !ok {
 			t.Errorf("missing field %q in %s", want, raw)
 		}
@@ -29,28 +30,35 @@ func TestLineMarshalFieldNames(t *testing.T) {
 	}
 }
 
-func TestWriterAppendCreatesDirsAndAppends(t *testing.T) {
+func TestWriterWriteCreatesDirAndFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "label", "sess.jsonl")
+	sessionDir := filepath.Join(dir, "label", "sess")
 	w := NewWriter(16)
-	w.Append(path, []byte(`{"ts":1}`))
-	w.Append(path, []byte(`{"ts":2}`))
+	w.Write(sessionDir, "req-1.jsonl", []byte(`{"ts":1}`))
+	w.Write(sessionDir, "req-2.jsonl", []byte(`{"ts":2}`))
 	w.Close()
-	data, err := os.ReadFile(path)
+	data1, err := os.ReadFile(filepath.Join(sessionDir, "req-1.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "{\"ts\":1}\n{\"ts\":2}\n" {
-		t.Fatalf("unexpected content: %q", data)
+	if string(data1) != "{\"ts\":1}\n" {
+		t.Fatalf("unexpected content: %q", data1)
+	}
+	data2, err := os.ReadFile(filepath.Join(sessionDir, "req-2.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data2) != "{\"ts\":2}\n" {
+		t.Fatalf("unexpected content: %q", data2)
 	}
 }
 
-// TestWriterConcurrentAppendDuringClose races several goroutines calling
-// Append against a single Close. Must not panic ("send on closed channel")
+// TestWriterConcurrentWriteDuringClose races several goroutines calling
+// Write against a single Close. Must not panic ("send on closed channel")
 // under -race.
-func TestWriterConcurrentAppendDuringClose(t *testing.T) {
+func TestWriterConcurrentWriteDuringClose(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sess.jsonl")
+	sessionDir := filepath.Join(dir, "sess")
 	w := NewWriter(16)
 
 	const goroutines = 20
@@ -60,12 +68,12 @@ func TestWriterConcurrentAppendDuringClose(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				w.Append(path, []byte(`{"ts":1}`))
+				w.Write(sessionDir, fmt.Sprintf("req-%d-%d.jsonl", n, j), []byte(`{"ts":1}`))
 			}
 		}(i)
 	}
 
-	// Close concurrently with the Append storm above.
+	// Close concurrently with the Write storm above.
 	go func() {
 		w.Close()
 	}()
@@ -81,77 +89,42 @@ func TestWriterDoubleCloseDoesNotPanic(t *testing.T) {
 	w.Close()
 }
 
-// TestWriterAppendAfterCloseDrops verifies that Append after Close is a
-// silent no-op (dropped and logged) rather than a panic, and the file is
-// left unchanged.
-func TestWriterAppendAfterCloseDrops(t *testing.T) {
+// TestWriterWriteAfterCloseDrops verifies that Write after Close is a
+// silent no-op (dropped and logged) rather than a panic, and no file is
+// created for the dropped record.
+func TestWriterWriteAfterCloseDrops(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sess.jsonl")
+	sessionDir := filepath.Join(dir, "sess")
 	w := NewWriter(4)
-	w.Append(path, []byte(`{"ts":1}`))
+	w.Write(sessionDir, "req-1.jsonl", []byte(`{"ts":1}`))
 	w.Close()
 
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w.Write(sessionDir, "req-2.jsonl", []byte(`{"ts":2}`))
 
-	w.Append(path, []byte(`{"ts":2}`))
-
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Fatalf("file changed after Append post-Close: before=%q after=%q", before, after)
+	if _, err := os.Stat(filepath.Join(sessionDir, "req-2.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("write after Close should be dropped, got err=%v", err)
 	}
 }
 
-// TestWriterHasPendingTracksInFlightAppends verifies HasPending reports true
-// once an append is enqueued and false again once the writer goroutine has
+// TestWriterHasPendingTracksInFlightWrites verifies HasPending reports true
+// once a write is enqueued and false again once the writer goroutine has
 // drained it. The writer goroutine is started manually (rather than via
 // NewWriter) so the "enqueued but not yet written" window can be observed
 // deterministically instead of racing the background goroutine.
-func TestWriterHasPendingTracksInFlightAppends(t *testing.T) {
+func TestWriterHasPendingTracksInFlightWrites(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sess.jsonl")
-	w := &Writer{queue: make(chan appendRequest, 4), done: make(chan struct{}), pending: make(map[string]int)}
+	sessionDir := filepath.Join(dir, "sess")
+	w := &Writer{queue: make(chan writeRequest, 4), done: make(chan struct{}), pending: make(map[string]int)}
 
-	w.Append(path, []byte(`{"ts":1}`))
-	if !w.HasPending(path) {
+	w.Write(sessionDir, "req-1.jsonl", []byte(`{"ts":1}`))
+	if !w.HasPending(sessionDir) {
 		t.Fatal("expected HasPending true immediately after enqueue, before the writer goroutine drains it")
 	}
 
 	go w.run()
 	w.Close() // waits for the queue to drain before returning.
 
-	if w.HasPending(path) {
+	if w.HasPending(sessionDir) {
 		t.Fatal("expected HasPending false after Close drains the queue")
-	}
-}
-
-func TestRecoverTornLine(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sess.jsonl")
-	if err := os.WriteFile(path, []byte("{\"ts\":1}\n{\"ts\":2,\"tor"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := RecoverTornLine(path); err != nil {
-		t.Fatal(err)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "{\"ts\":1}\n" {
-		t.Fatalf("torn line not truncated: %q", data)
-	}
-	n, err := CountLines(path)
-	if err != nil || n != 1 {
-		t.Fatalf("CountLines = %d, %v", n, err)
-	}
-	// Missing file: no error, zero lines.
-	if err := RecoverTornLine(filepath.Join(dir, "absent.jsonl")); err != nil {
-		t.Fatal(err)
-	}
-	if n, _ := CountLines(filepath.Join(dir, "absent.jsonl")); n != 0 {
-		t.Fatalf("absent file lines = %d", n)
 	}
 }

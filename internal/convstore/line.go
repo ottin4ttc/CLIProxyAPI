@@ -5,7 +5,6 @@ import "encoding/json"
 // Line is one recorded request turn — exactly one JSONL line.
 type Line struct {
 	TS             int64           `json:"ts"`
-	Turn           int             `json:"turn"`
 	Model          string          `json:"model,omitempty"`
 	RequestedModel string          `json:"requested_model,omitempty"`
 	Stream         bool            `json:"stream"`

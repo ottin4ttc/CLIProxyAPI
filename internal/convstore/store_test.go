@@ -100,7 +100,7 @@ func TestNonStreamingRoundTrip(t *testing.T) {
 		t.Fatalf("want 1 line, got %d", len(lines))
 	}
 	l := lines[0]
-	if l.Status != "ok" || l.Turn != 1 || l.Stream || l.Response == "" {
+	if l.Status != "ok" || l.Stream || l.Response == "" {
 		t.Fatalf("unexpected line: %+v", l)
 	}
 	// Directory label must keep the user prefix readable (16+4 truncation).
@@ -116,18 +116,19 @@ func TestNonStreamingRoundTrip(t *testing.T) {
 // stale entry is finalized as "error" so the retry is visible in the log,
 // and the second request/response pair still records normally.
 func TestDuplicateRequestIDFinalizesStaleAsError(t *testing.T) {
-	s, dir, _ := testStore(t)
+	s, dir, clock := testStore(t)
 	body := `{"messages":[{"role":"user","content":"same"}]}`
 	s.OnRequestBefore(reqIntercept(body))
+	// Same RequestID means the stale and retry records would otherwise share
+	// a filename ({ts}-{requestID}.jsonl); advance the clock so each lands
+	// in its own file instead of the retry silently overwriting the stale one.
+	*clock = clock.Add(time.Millisecond)
 	s.OnRequestBefore(reqIntercept(body)) // same RequestID: stale pending finalized as "error"
 	s.OnResponse(pluginapi.ResponseInterceptRequest{RequestID: "req-1", OriginalRequest: []byte(body), Body: []byte(`{"n":2}`)})
 	s.Shutdown()
 	lines := readLines(t, dir)
 	if len(lines) != 2 {
 		t.Fatalf("want 2 lines, got %d", len(lines))
-	}
-	if lines[0].Turn == lines[1].Turn {
-		t.Fatalf("turns must increment: %+v", lines)
 	}
 	var gotError, gotOK bool
 	for _, l := range lines {
@@ -168,11 +169,9 @@ func TestBodyTruncation(t *testing.T) {
 	}
 }
 
-// TestConcurrentFinalizeSameSessionFile is a regression test for the store
-// lock no longer being held across finalize's disk I/O (RecoverTornLine /
-// CountLines). N goroutines finalize turns for the same brand-new session
-// file concurrently; every turn must still be unique and the set of turns
-// must be exactly 1..N, even though the seeding I/O for that file races.
+// TestConcurrentFinalizeSameSessionFile is a regression test verifying that
+// N concurrent finalizes into the same session directory each land in their
+// own file, uncorrupted, with no record lost or overwritten by another.
 func TestConcurrentFinalizeSameSessionFile(t *testing.T) {
 	s, dir, _ := testStore(t)
 	const n = 20
@@ -213,22 +212,116 @@ func TestConcurrentFinalizeSameSessionFile(t *testing.T) {
 		}
 		return err
 	})
-	if len(files) != 1 {
-		t.Fatalf("want all turns in 1 session file, got %d: %v", len(files), files)
+	if len(files) != n {
+		t.Fatalf("want %d distinct request files, got %d: %v", n, len(files), files)
 	}
+	for _, f := range files {
+		if got := filepath.Base(filepath.Dir(f)); got != "concurrent-session" {
+			t.Fatalf("file %s sits under %q, want session dir concurrent-session", f, got)
+		}
+	}
+}
 
-	seen := make(map[int]bool, n)
-	for _, l := range lines {
-		if l.Turn < 1 || l.Turn > n {
-			t.Fatalf("turn out of range [1,%d]: %+v", n, l)
-		}
-		if seen[l.Turn] {
-			t.Fatalf("duplicate turn %d", l.Turn)
-		}
-		seen[l.Turn] = true
+func TestOneFilePerRequest(t *testing.T) {
+	s, dir, _ := testStore(t)
+	for i, id := range []string{"req-1", "req-2"} {
+		headers := http.Header{}
+		headers.Set("session_id", "sess-abc")
+		s.OnRequestBefore(pluginapi.RequestInterceptRequest{
+			RequestID: id,
+			Headers:   headers,
+			Body:      []byte(fmt.Sprintf(`{"n":%d}`, i)),
+		})
+		s.OnResponse(pluginapi.ResponseInterceptRequest{
+			RequestID: id,
+			Body:      []byte(`{"ok":true}`),
+		})
 	}
-	if len(seen) != n {
-		t.Fatalf("want %d distinct turns, got %d", n, len(seen))
+	s.writer.Close()
+
+	var files []string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".jsonl") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if len(files) != 2 {
+		t.Fatalf("want 2 files, got %d: %v", len(files), files)
+	}
+	for _, f := range files {
+		if got := filepath.Base(filepath.Dir(f)); got != "sess-abc" {
+			t.Fatalf("file %s sits under %q, want session dir sess-abc", f, got)
+		}
+		data, errRead := os.ReadFile(f)
+		if errRead != nil {
+			t.Fatalf("read %s: %v", f, errRead)
+		}
+		if n := strings.Count(strings.TrimSpace(string(data)), "\n"); n != 0 {
+			t.Fatalf("file %s holds %d extra newlines, want exactly one record", f, n)
+		}
+	}
+}
+
+func TestLineHasNoTurnField(t *testing.T) {
+	s, _, _ := testStore(t)
+	headers := http.Header{}
+	headers.Set("session_id", "sess-turn")
+	s.OnRequestBefore(pluginapi.RequestInterceptRequest{
+		RequestID: "req-1",
+		Headers:   headers,
+		Body:      []byte(`{}`),
+	})
+	s.OnResponse(pluginapi.ResponseInterceptRequest{
+		RequestID: "req-1",
+		Body:      []byte(`{}`),
+	})
+	s.writer.Close()
+
+	line := readSingleLine(t, s)
+	if _, ok := line["turn"]; ok {
+		t.Fatal("turn field is still present in the record")
+	}
+	if _, ok := line["ts"]; !ok {
+		t.Fatal("ts field is required for ordering")
+	}
+}
+
+func TestConcurrentRequestsInOneSessionWriteDistinctFiles(t *testing.T) {
+	s, dir, _ := testStore(t)
+	const n = 16
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("req-%d", i)
+			headers := http.Header{}
+			headers.Set("session_id", "sess-concurrent")
+			s.OnRequestBefore(pluginapi.RequestInterceptRequest{
+				RequestID: id,
+				Headers:   headers,
+				Body:      []byte(`{}`),
+			})
+			s.OnResponse(pluginapi.ResponseInterceptRequest{
+				RequestID: id,
+				Body:      []byte(`{}`),
+			})
+		}(i)
+	}
+	wg.Wait()
+	s.writer.Close()
+
+	sessionDirs, err := filepath.Glob(filepath.Join(dir, "*", "sess-concurrent"))
+	if err != nil || len(sessionDirs) != 1 {
+		t.Fatalf("want exactly 1 session dir, got %v (err %v)", sessionDirs, err)
+	}
+	entries, err := os.ReadDir(sessionDirs[0])
+	if err != nil {
+		t.Fatalf("read session dir: %v", err)
+	}
+	if len(entries) != n {
+		t.Fatalf("want %d distinct files, got %d", n, len(entries))
 	}
 }
 

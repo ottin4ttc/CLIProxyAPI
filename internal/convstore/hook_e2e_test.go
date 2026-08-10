@@ -74,8 +74,8 @@ func TestStreamingConversationRecordedEndToEnd(t *testing.T) {
 	if lines[0]["status"] != "ok" {
 		t.Fatalf("status = %v, want ok", lines[0]["status"])
 	}
-	if lines[0]["turn"] != float64(1) {
-		t.Fatalf("turn = %v, want 1", lines[0]["turn"])
+	if _, hasTurn := lines[0]["turn"]; hasTurn {
+		t.Fatal("turn field should no longer be recorded")
 	}
 	if _, hasHeaders := lines[0]["request_headers"]; !hasHeaders {
 		t.Fatal("request_headers missing from recorded line")

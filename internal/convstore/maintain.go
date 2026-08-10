@@ -182,7 +182,6 @@ func (s *Store) StartMaintenance(stop <-chan struct{}) {
 				if err := ArchiveIdle(cfg.DataDir, idleBefore, s.writer.HasPending); err != nil {
 					fmt.Fprintf(os.Stderr, "[conversation-store] archive: %v\n", err)
 				}
-				s.forgetArchivedTurns()
 			}
 			if cfg.RetentionDays > 0 {
 				olderThan := s.now().Add(-time.Duration(cfg.RetentionDays) * 24 * time.Hour)
@@ -192,41 +191,4 @@ func (s *Store) StartMaintenance(stop <-chan struct{}) {
 			}
 		}
 	}
-}
-
-// forgetArchivedTurns drops turn counters for files that no longer exist so
-// a resumed session re-seeds from the (now empty) active file. Turn numbers
-// restart after an archive round; consumers order by (turn, ts).
-//
-// Follows the package's established two-phase, no-disk-I/O-under-lock
-// pattern (mirrors finalize's seed step): snapshot the tracked paths under
-// s.mu, run os.Stat on each unlocked, then re-lock and delete only the
-// confirmed-missing ones. A path with a writer append still in flight is
-// left alone even if currently missing from disk: the writer is about to
-// recreate it, and dropping the counter here would let the next finalize
-// reseed from CountLines on a file that is really mid-recreation, producing
-// a non-monotonic or duplicate turn number.
-func (s *Store) forgetArchivedTurns() {
-	s.mu.Lock()
-	paths := make([]string, 0, len(s.turns))
-	for path := range s.turns {
-		paths = append(paths, path)
-	}
-	s.mu.Unlock()
-
-	var missing []string
-	for _, path := range paths {
-		if s.writer.HasPending(path) {
-			continue
-		}
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			missing = append(missing, path)
-		}
-	}
-
-	s.mu.Lock()
-	for _, path := range missing {
-		delete(s.turns, path)
-	}
-	s.mu.Unlock()
 }
