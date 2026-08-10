@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -282,6 +283,22 @@ func apiKeyHashPrefix(key string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// requestClientIP returns the client IP from request.RemoteAddr, with the port
+// split off. It deliberately does not use gin's c.ClientIP(): this server
+// trusts all proxies, so c.ClientIP() would honor a client-supplied
+// X-Forwarded-For header and be spoofable — there is a prior incident behind
+// this. Mirrors requestClientIP in sdk/api/handlers/handlers.go.
+func requestClientIP(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	remoteAddr := strings.TrimSpace(request.RemoteAddr)
+	if host, _, errSplit := net.SplitHostPort(remoteAddr); errSplit == nil {
+		return strings.TrimSpace(host)
+	}
+	return remoteAddr
+}
+
 // publishRPMLimitUsage emits a failed usage record for a throttled request.
 //
 // A request rejected here never reaches an executor, so the usual UsageReporter
@@ -290,8 +307,38 @@ func apiKeyHashPrefix(key string) string {
 // limit. The record carries the client API key so the sink can attribute it and
 // leaves model and provider empty, which the usage queue normalizes to
 // "unknown"; the request body is never parsed on this path.
+//
+// It also attaches the same endpoint and client-request metadata the normal
+// pipeline attaches in GetContextWithCancel (sdk/api/handlers/handlers.go), so
+// the record carries client_ip, x_forwarded_for, user_agent, and endpoint —
+// without them, one API key shared across several machines could not be
+// attributed to whichever client is hammering the limit.
 func publishRPMLimitUsage(c *gin.Context, apiKey string, limit int) {
-	usage.PublishRecord(c.Request.Context(), usage.Record{
+	ctx := c.Request.Context()
+
+	endpoint := ""
+	path := strings.TrimSpace(c.FullPath())
+	if path == "" && c.Request.URL != nil {
+		path = strings.TrimSpace(c.Request.URL.Path)
+	}
+	if path != "" {
+		method := strings.TrimSpace(c.Request.Method)
+		if method != "" {
+			endpoint = method + " " + path
+		} else {
+			endpoint = path
+		}
+	}
+	if endpoint != "" {
+		ctx = logging.WithEndpoint(ctx, endpoint)
+	}
+	ctx = logging.WithClientRequestMetadata(ctx, logging.ClientRequestMetadata{
+		ClientIP:      requestClientIP(c.Request),
+		XForwardedFor: strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
+		UserAgent:     strings.TrimSpace(c.Request.UserAgent()),
+	})
+
+	usage.PublishRecord(ctx, usage.Record{
 		APIKey:      apiKey,
 		RequestedAt: time.Now(),
 		Failed:      true,

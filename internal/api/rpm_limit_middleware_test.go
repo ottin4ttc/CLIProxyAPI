@@ -13,6 +13,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeylimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -172,6 +173,70 @@ func TestThrottledRequestPublishesUsageRecord(t *testing.T) {
 	}
 	if !strings.Contains(record.Fail.Body, "rpm_limit_exceeded") {
 		t.Fatalf("record.Fail.Body = %q, want it to mark the throttle", record.Fail.Body)
+	}
+}
+
+// TestThrottledRequestPublishesClientMetadata proves publishRPMLimitUsage
+// attaches the same client-request metadata and endpoint the normal pipeline
+// attaches in GetContextWithCancel (sdk/api/handlers/handlers.go:429-452).
+// Without this, client_ip, x_forwarded_for, user_agent, and endpoint arrive
+// empty on the throttle record, and a shared API key hammered from one of
+// several machines cannot be attributed to any particular client.
+func TestThrottledRequestPublishesClientMetadata(t *testing.T) {
+	captured := make(chan context.Context, 4)
+	usage.RegisterNamedPlugin("rpm-limit-metadata-test", usagePluginFunc(func(ctx context.Context, _ usage.Record) {
+		captured <- ctx
+	}))
+	defer usage.RegisterNamedPlugin("rpm-limit-metadata-test", usagePluginFunc(func(context.Context, usage.Record) {}))
+
+	gin.SetMode(gin.TestMode)
+	s := newRPMTestServer(config.APIKeyLimits{DefaultRPM: 1})
+
+	drive := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		// A real RemoteAddr, distinct from the spoofed X-Forwarded-For below,
+		// so the assertions can tell which one the record actually used.
+		c.Request.RemoteAddr = "203.0.113.7:54321"
+		c.Request.Header.Set("X-Forwarded-For", "198.51.100.9")
+		c.Request.Header.Set("User-Agent", "claude-code/1.2.3")
+		c.Set("userApiKey", "sk-a")
+		s.rpmLimitMiddleware()(c)
+		return recorder
+	}
+
+	drive()
+	result := drive()
+	if result.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request = %d, want 429", result.Code)
+	}
+
+	var recordCtx context.Context
+	select {
+	case recordCtx = <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no usage record published for the throttled request")
+	}
+
+	meta := logging.GetClientRequestMetadata(recordCtx)
+	if meta.ClientIP != "203.0.113.7" {
+		t.Fatalf("ClientIP = %q, want the host split from RemoteAddr (203.0.113.7)", meta.ClientIP)
+	}
+	// The security property this feature depends on: a future refactor to
+	// c.ClientIP() would honor the client-supplied X-Forwarded-For below and
+	// must fail this assertion.
+	if meta.ClientIP == "198.51.100.9" {
+		t.Fatal("ClientIP must come from RemoteAddr, not the spoofable X-Forwarded-For header")
+	}
+	if meta.XForwardedFor != "198.51.100.9" {
+		t.Fatalf("XForwardedFor = %q, want the raw header value 198.51.100.9", meta.XForwardedFor)
+	}
+	if meta.UserAgent != "claude-code/1.2.3" {
+		t.Fatalf("UserAgent = %q, want claude-code/1.2.3", meta.UserAgent)
+	}
+	if endpoint := logging.GetEndpoint(recordCtx); endpoint != "POST /v1/messages" {
+		t.Fatalf("endpoint = %q, want %q", endpoint, "POST /v1/messages")
 	}
 }
 
