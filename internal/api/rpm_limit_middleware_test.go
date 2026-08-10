@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeylimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/throttlereport"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -90,6 +91,12 @@ func TestRPMMiddlewareExemptPathsAreNotCounted(t *testing.T) {
 		{http.MethodGet, "/v1/live/call-123"},
 		{http.MethodGet, "/v1/realtime"},
 		{http.MethodGet, "/v1/realtime/calls/call-123"},
+		// The two WebSocket upgrade handshakes: counting them here in addition
+		// to the per-generation count in the WebSocket read loop
+		// (sdk/api/handlers/openai/openai_responses_websocket.go) would charge
+		// the first generation of every socket twice.
+		{http.MethodGet, "/v1/responses"},
+		{http.MethodGet, "/backend-api/codex/responses"},
 	}
 	for _, tc := range exempt {
 		for i := 0; i < 5; i++ {
@@ -105,6 +112,35 @@ func TestRPMMiddlewareExemptPathsAreNotCounted(t *testing.T) {
 	result := runRPMRequest(t, s, http.MethodPost, "/v1/messages", "sk-a")
 	if result.recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("second counted request = %d, want 429", result.recorder.Code)
+	}
+}
+
+// TestRPMLimitExemptPathExemptsResponsesWebsocketHandshakes pins
+// rpmLimitExemptPath directly (not just through the middleware) for the two
+// WebSocket upgrade routes. Before this change the HTTP middleware charged
+// one unit at handshake and the socket then carried an unbounded number of
+// generations for free; now the handshake must be exempt so the WebSocket
+// read loop's own per-generation check (openai_responses_websocket.go) is
+// the only place that counts against this budget.
+func TestRPMLimitExemptPathExemptsResponsesWebsocketHandshakes(t *testing.T) {
+	cases := []struct{ method, path string }{
+		{http.MethodGet, "/v1/responses"},
+		{http.MethodGet, "/backend-api/codex/responses"},
+	}
+	for _, tc := range cases {
+		if !rpmLimitExemptPath(tc.method, tc.path) {
+			t.Fatalf("rpmLimitExemptPath(%s, %s) = false, want true (WebSocket handshake)", tc.method, tc.path)
+		}
+	}
+	// The POST variants are ordinary HTTP generations and must stay counted.
+	postCases := []struct{ method, path string }{
+		{http.MethodPost, "/v1/responses"},
+		{http.MethodPost, "/backend-api/codex/responses"},
+	}
+	for _, tc := range postCases {
+		if rpmLimitExemptPath(tc.method, tc.path) {
+			t.Fatalf("rpmLimitExemptPath(%s, %s) = true, want false (POST generation must stay counted)", tc.method, tc.path)
+		}
 	}
 }
 
@@ -333,8 +369,14 @@ func rpmWiringAuthedRequest(s *Server, method, path, apiKey string) *httptest.Re
 // group. No upstream credentials are configured; requests under the cap are
 // only checked for not being 429 and may fail downstream for unrelated
 // reasons (no credentials available), which is expected and irrelevant here.
+//
+// Each subtest uses its own API key rather than one shared constant: NewServer
+// now wires s.rpmLimiter to apikeylimit.Default(), the process-wide singleton
+// also used by the WebSocket generation-dispatch path, so a key's budget
+// persists across subtests within this test binary. A shared key would let
+// the "v1" subtest's requests exhaust the 60-second window before the
+// "openai/v1" subtest runs, failing it for the wrong reason.
 func TestRPMLimitEnforcedThroughRealRouting(t *testing.T) {
-	const apiKey = "sk-real"
 	const limit = 2
 
 	groups := []struct {
@@ -350,6 +392,7 @@ func TestRPMLimitEnforcedThroughRealRouting(t *testing.T) {
 
 	for _, group := range groups {
 		t.Run(group.name, func(t *testing.T) {
+			apiKey := "sk-real-" + strings.ReplaceAll(group.name, "/", "-")
 			s := newRPMWiringTestServer(t, apiKey, limit)
 
 			for i := 0; i < limit; i++ {
@@ -372,15 +415,17 @@ func TestRPMLimitEnforcedThroughRealRouting(t *testing.T) {
 
 func TestAPIKeyHashPrefix(t *testing.T) {
 	// The prefix is what gets logged and what joins to the usage sink's
-	// api_key_hash; the key itself must never appear.
-	got := apiKeyHashPrefix("sk-a")
+	// api_key_hash; the key itself must never appear. This logic now lives in
+	// internal/throttlereport, shared with the WebSocket generation-dispatch
+	// path (sdk/api/handlers/openai).
+	got := throttlereport.APIKeyHashPrefix("sk-a")
 	if len(got) != 12 {
 		t.Fatalf("len = %d, want 12", len(got))
 	}
 	if strings.Contains(got, "sk-a") {
 		t.Fatal("the hash must not embed the key")
 	}
-	if got == apiKeyHashPrefix("sk-b") {
+	if got == throttlereport.APIKeyHashPrefix("sk-b") {
 		t.Fatal("different keys must hash differently")
 	}
 }

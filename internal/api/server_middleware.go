@@ -1,11 +1,7 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"math"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,8 +13,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/throttlereport"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -243,9 +239,12 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 }
 
 // rpmLimitExemptPath reports whether a proxy path is excluded from RPM
-// accounting: model metadata, POST /v1/messages/count_tokens, and the sideband
-// companion channels of a call that was already counted when it was opened.
-// Counting a sideband would charge one call twice.
+// accounting: model metadata, POST /v1/messages/count_tokens, the sideband
+// companion channels of a call that was already counted when it was opened,
+// and the two WebSocket handshake paths whose generations are counted
+// individually at dispatch time instead of once at handshake (see
+// "WebSocket accounting" below). Counting a sideband, or the handshake in
+// addition to its generations, would charge one call twice.
 //
 // count_tokens is exempt because it produces no usage_events row and was
 // therefore excluded from the usage_events measurement the default limit was
@@ -271,82 +270,16 @@ func rpmLimitExemptPath(method, path string) bool {
 		return true
 	case strings.HasPrefix(path, "/v1/realtime/calls/"):
 		return true
+	case path == "/v1/responses":
+		// WebSocket upgrade; see openai_responses_websocket.go, which counts
+		// each generation dispatched over the socket instead.
+		return true
+	case path == "/backend-api/codex/responses":
+		// Same WebSocket upgrade as /v1/responses, reached through the Codex
+		// direct route.
+		return true
 	}
 	return false
-}
-
-// apiKeyHashPrefix returns the first 12 hex characters of sha256(key). CPA never
-// logs API keys; this prefix matches the hash the usage sink stores, so a
-// throttle log line can be joined to a human-readable alias.
-func apiKeyHashPrefix(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])[:12]
-}
-
-// requestClientIP returns the client IP from request.RemoteAddr, with the port
-// split off. It deliberately does not use gin's c.ClientIP(): this server
-// trusts all proxies, so c.ClientIP() would honor a client-supplied
-// X-Forwarded-For header and be spoofable — there is a prior incident behind
-// this. Mirrors requestClientIP in sdk/api/handlers/handlers.go.
-func requestClientIP(request *http.Request) string {
-	if request == nil {
-		return ""
-	}
-	remoteAddr := strings.TrimSpace(request.RemoteAddr)
-	if host, _, errSplit := net.SplitHostPort(remoteAddr); errSplit == nil {
-		return strings.TrimSpace(host)
-	}
-	return remoteAddr
-}
-
-// publishRPMLimitUsage emits a failed usage record for a throttled request.
-//
-// A request rejected here never reaches an executor, so the usual UsageReporter
-// never runs and the request would otherwise leave no trace downstream — the
-// usage database would simply show fewer requests, with nothing pointing at the
-// limit. The record carries the client API key so the sink can attribute it and
-// leaves model and provider empty, which the usage queue normalizes to
-// "unknown"; the request body is never parsed on this path.
-//
-// It also attaches the same endpoint and client-request metadata the normal
-// pipeline attaches in GetContextWithCancel (sdk/api/handlers/handlers.go), so
-// the record carries client_ip, x_forwarded_for, user_agent, and endpoint —
-// without them, one API key shared across several machines could not be
-// attributed to whichever client is hammering the limit.
-func publishRPMLimitUsage(c *gin.Context, apiKey string, limit int) {
-	ctx := c.Request.Context()
-
-	endpoint := ""
-	path := strings.TrimSpace(c.FullPath())
-	if path == "" && c.Request.URL != nil {
-		path = strings.TrimSpace(c.Request.URL.Path)
-	}
-	if path != "" {
-		method := strings.TrimSpace(c.Request.Method)
-		if method != "" {
-			endpoint = method + " " + path
-		} else {
-			endpoint = path
-		}
-	}
-	if endpoint != "" {
-		ctx = logging.WithEndpoint(ctx, endpoint)
-	}
-	ctx = logging.WithClientRequestMetadata(ctx, logging.ClientRequestMetadata{
-		ClientIP:      requestClientIP(c.Request),
-		XForwardedFor: strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
-		UserAgent:     strings.TrimSpace(c.Request.UserAgent()),
-	})
-
-	usage.PublishRecord(ctx, usage.Record{
-		APIKey:      apiKey,
-		RequestedAt: time.Now(),
-		Failed:      true,
-		Fail: usage.Failure{
-			StatusCode: http.StatusTooManyRequests,
-			Body:       fmt.Sprintf(`{"error":{"code":"rpm_limit_exceeded","limit":%d}}`, limit),
-		},
-	})
 }
 
 // rpmLimitMiddleware enforces the per-client-API-key requests-per-minute cap.
@@ -354,14 +287,16 @@ func publishRPMLimitUsage(c *gin.Context, apiKey string, limit int) {
 // Unlike a concurrency limit it holds nothing for the request's lifetime, so it
 // never interacts with SSE or WebSocket duration.
 //
-// It counts requests, not generations: GET /v1/responses and
-// GET /backend-api/codex/responses are WebSocket upgrades, and a WebSocket
-// connection consumes exactly one unit of budget at handshake regardless of
-// how many generations it later carries over that socket, each of which
-// writes its own usage_events row. RPM figures derived from usage_events
-// therefore overstate what this middleware sees for WebSocket-transport
-// clients; anyone re-calibrating default-rpm from usage_events must split by
-// endpoint (GET vs POST) first. See the design doc for the measured impact.
+// It counts requests, one unit per HTTP request. GET /v1/responses and
+// GET /backend-api/codex/responses are WebSocket upgrades and are exempt here
+// (rpmLimitExemptPath): the handshake itself no longer counts, and each
+// generation dispatched over the socket instead consumes one unit directly
+// against the shared apikeylimit.Default() limiter in the WebSocket read loop
+// (sdk/api/handlers/openai/openai_responses_websocket.go), the same limiter
+// this middleware uses. One unit therefore always means one generation on
+// both transports, matching how usage_events counts a generation — figures
+// derived from usage_events are directly comparable to what this limiter
+// counts, on either transport.
 func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s == nil || s.rpmLimiter == nil || s.cfg == nil || c.Request == nil || c.Request.URL == nil {
@@ -393,23 +328,7 @@ func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		seconds := int(math.Ceil(retryAfter.Seconds()))
-		if seconds < 1 {
-			seconds = 1
-		}
-		// The window is one minute, so a correct retryAfter can never
-		// legitimately exceed 60s. retryAfter is derived from a stored
-		// timestamp and the current now (Allow provides no bound against a
-		// wall-clock step), so if the clock steps backwards it can come out
-		// far larger than one window. Claude Code / Codex CLI honor this
-		// header verbatim, so an unclamped value would silence a client for
-		// far longer than the window on a clock glitch alone.
-		if seconds > 60 {
-			seconds = 60
-		}
-		log.Warnf("api key rpm limit exceeded: key_hash=%s limit=%d path=%s retry_after=%ds",
-			apiKeyHashPrefix(key), limit, c.Request.URL.Path, seconds)
-		publishRPMLimitUsage(c, key, limit)
+		seconds := throttlereport.Reject(c, key, limit, retryAfter)
 		c.Header("Retry-After", strconv.Itoa(seconds))
 		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
 			"message": "Request rate limit exceeded for this API key.",

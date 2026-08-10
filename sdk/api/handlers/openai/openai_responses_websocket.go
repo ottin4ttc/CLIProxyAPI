@@ -541,6 +541,36 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 
+		// Per-API-key RPM enforcement: one unit per generation dispatch, matching
+		// how usage_events counts a generation and how the HTTP path counts one
+		// unit per HTTP request. Placed before any turn-state mutation below
+		// (toolCacheTurn, lastRequest, lastResponseOutput, ...) so a rejection can
+		// "continue" the read loop with zero state to roll back — every payload
+		// that reaches this point is otherwise guaranteed to fall through to
+		// h.ExecuteStreamWithAuthManager below.
+		if rpmErrMsg := h.responsesWebsocketRPMLimitReject(c); rpmErrMsg != nil {
+			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), rpmErrMsg)
+			markAPIResponseTimestamp(c)
+			errorPayload, errWrite := writeResponsesWebsocketError(writer, wsTimelineLog, rpmErrMsg)
+			log.Infof(
+				"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+				passthroughSessionID,
+				websocket.TextMessage,
+				websocketPayloadEventType(errorPayload),
+				websocketPayloadPreview(errorPayload),
+			)
+			if errWrite != nil {
+				log.Warnf(
+					"responses websocket: downstream_out write failed id=%s event=%s error=%v",
+					passthroughSessionID,
+					websocketPayloadEventType(errorPayload),
+					errWrite,
+				)
+				return
+			}
+			continue
+		}
+
 		var toolCacheTurn *responsesWebsocketToolCacheTurn
 		nextLastRequest := lastRequest
 		if nativeWebsocketPassthrough {

@@ -204,7 +204,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
-	s.rpmLimiter = apikeylimit.New()
+	// Shared with the WebSocket generation-dispatch path
+	// (sdk/api/handlers/openai/openai_responses_websocket.go), which cannot
+	// reach s.rpmLimiter directly, so both transports count against the same
+	// per-key budget.
+	s.rpmLimiter = apikeylimit.Default()
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
