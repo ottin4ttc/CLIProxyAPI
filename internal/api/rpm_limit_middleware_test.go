@@ -4,17 +4,19 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeylimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -271,74 +273,101 @@ func TestRPMMiddlewareClampsRetryAfterTo60Seconds(t *testing.T) {
 	}
 }
 
-// TestRPMMiddlewareWiredAfterAuthMiddleware proves the middleware behaves
-// correctly only when registered the way server_routes.go registers it —
-// AuthMiddleware first, rpmLimitMiddleware second — using a real gin engine,
-// the real config-api-key access provider, and real HTTP requests, instead of
-// calling s.rpmLimitMiddleware() directly with a hand-seeded "userApiKey"
-// like every other test in this file. Every other test would still pass if
-// someone moved the registration order in server_routes.go; this one would not.
-func TestRPMMiddlewareWiredAfterAuthMiddleware(t *testing.T) {
+// newRPMWiringTestServer builds a server the production way, through
+// NewServer, instead of a hand-built gin engine. NewServer calls
+// s.setupRoutes() (server_routes.go) and s.applyAccessConfig (which
+// registers the real config-api-key access provider from cfg.APIKeys), so
+// this exercises the actual .Use() registration order in server_routes.go.
+// A hand-rolled engine with a manually-seeded "userApiKey" context value —
+// like every other test in this file, and like the test this replaces —
+// would keep passing even if someone swapped that order.
+func newRPMWiringTestServer(t *testing.T, apiKey string, defaultRPM int) *Server {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	newEngine := func(reverseOrder bool) *gin.Engine {
-		cfg := &config.Config{}
-		cfg.APIKeys = []string{"sk-real"}
-		cfg.APIKeyLimits = config.APIKeyLimits{DefaultRPM: 1}
-
-		// Register the real built-in config-api-key provider, the way
-		// sdk/cliproxy/builder.go does, so AuthMiddleware sets a real
-		// "userApiKey" from the Authorization header instead of one seeded
-		// directly into the gin context.
-		configaccess.Register(&cfg.SDKConfig)
-		t.Cleanup(func() { sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey) })
-		accessManager := sdkaccess.NewManager()
-		accessManager.SetProviders(sdkaccess.RegisteredProviders())
-
-		s := &Server{cfg: cfg, rpmLimiter: apikeylimit.New(), accessManager: accessManager}
-
-		engine := gin.New()
-		group := engine.Group("/v1")
-		if reverseOrder {
-			// The wrong order: rpmLimitMiddleware runs before AuthMiddleware
-			// has had a chance to set "userApiKey", so it can never find a
-			// key and must always pass through, no matter the limit.
-			group.Use(s.rpmLimitMiddleware())
-			group.Use(AuthMiddleware(accessManager))
-		} else {
-			group.Use(AuthMiddleware(accessManager))
-			group.Use(s.rpmLimitMiddleware())
-		}
-		group.POST("/messages", func(c *gin.Context) { c.Status(http.StatusOK) })
-		return engine
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if errMkdir := os.MkdirAll(authDir, 0o700); errMkdir != nil {
+		t.Fatalf("failed to create auth dir: %v", errMkdir)
 	}
 
-	authedRequest := func(engine *gin.Engine) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-		req.Header.Set("Authorization", "Bearer sk-real")
-		rec := httptest.NewRecorder()
-		engine.ServeHTTP(rec, req)
-		return rec
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys:      []string{apiKey},
+			APIKeyLimits: config.APIKeyLimits{DefaultRPM: defaultRPM},
+		},
+		Port:    0,
+		AuthDir: authDir,
+		Debug:   true,
 	}
 
-	t.Run("correct order: authenticated over-limit request is throttled", func(t *testing.T) {
-		engine := newEngine(false)
-		if got := authedRequest(engine).Code; got != http.StatusOK {
-			t.Fatalf("first request = %d, want 200", got)
-		}
-		if got := authedRequest(engine).Code; got != http.StatusTooManyRequests {
-			t.Fatalf("second request = %d, want 429 when registered after AuthMiddleware", got)
-		}
-	})
+	authManager := auth.NewManager(nil, nil, nil)
+	accessManager := sdkaccess.NewManager()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	return NewServer(cfg, authManager, accessManager, configPath)
+}
 
-	t.Run("reversed order: limiter never fires because userApiKey is not yet set", func(t *testing.T) {
-		engine := newEngine(true)
-		for i := 0; i < 5; i++ {
-			if got := authedRequest(engine).Code; got != http.StatusOK {
-				t.Fatalf("request %d = %d, want 200; rpmLimitMiddleware before AuthMiddleware must never see userApiKey and so must never throttle", i, got)
+// rpmWiringAuthedRequest drives one request through the real engine with a
+// genuine Authorization header, the way a client would, instead of seeding
+// the gin context directly.
+func rpmWiringAuthedRequest(s *Server, method, path, apiKey string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	s.engine.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestRPMLimitEnforcedThroughRealRouting proves the real setupRoutes()
+// wiring — AuthMiddleware registered before rpmLimitMiddleware — actually
+// throttles traffic on each of the four proxy route groups. It builds the
+// server through NewServer and drives real HTTP requests through
+// s.engine.ServeHTTP with a genuine Authorization header, so "userApiKey" is
+// set by AuthMiddleware exactly as it is in production, not seeded directly
+// into a hand-built gin context.
+//
+// This is the assertion that pins the ordering: if rpmLimitMiddleware were
+// registered before AuthMiddleware for any of these groups, the limiter
+// would never see "userApiKey" on any request, every request would pass
+// through unthrottled, and the 429 assertion below would fail for that
+// group. No upstream credentials are configured; requests under the cap are
+// only checked for not being 429 and may fail downstream for unrelated
+// reasons (no credentials available), which is expected and irrelevant here.
+func TestRPMLimitEnforcedThroughRealRouting(t *testing.T) {
+	const apiKey = "sk-real"
+	const limit = 2
+
+	groups := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"v1", http.MethodPost, "/v1/messages"},
+		{"openai/v1", http.MethodPost, "/openai/v1/videos"},
+		{"backend-api/codex", http.MethodPost, "/backend-api/codex/responses"},
+		{"v1beta", http.MethodPost, "/v1beta/models/gemini-3-pro:generateContent"},
+	}
+
+	for _, group := range groups {
+		t.Run(group.name, func(t *testing.T) {
+			s := newRPMWiringTestServer(t, apiKey, limit)
+
+			for i := 0; i < limit; i++ {
+				rec := rpmWiringAuthedRequest(s, group.method, group.path, apiKey)
+				if rec.Code == http.StatusTooManyRequests {
+					t.Fatalf("request %d = 429, want under the cap of %d to never be throttled", i, limit)
+				}
 			}
-		}
-	})
+
+			rec := rpmWiringAuthedRequest(s, group.method, group.path, apiKey)
+			if rec.Code != http.StatusTooManyRequests {
+				t.Fatalf("request past the cap = %d, want 429", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "rpm_limit_exceeded") {
+				t.Fatalf("body = %q, want it to contain rpm_limit_exceeded", rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestAPIKeyHashPrefix(t *testing.T) {
