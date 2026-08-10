@@ -1,8 +1,14 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -11,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -229,5 +236,103 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 		c.Set(codexlive.ClientSecretSessionContextKey, authorization.Session)
 		c.Set(codexlive.ClientSecretPrincipalContextKey, authorization.Principal)
 		c.Next()
+	}
+}
+
+// rpmLimitExemptPath reports whether a proxy path is excluded from RPM
+// accounting: model metadata, local token counting, and the sideband companion
+// channels of a call that was already counted when it was opened. Counting a
+// sideband would charge one call twice.
+func rpmLimitExemptPath(method, path string) bool {
+	switch path {
+	case "/v1/models", "/v1beta/models", "/v1/messages/count_tokens", "/v1/realtime":
+		return true
+	}
+	if method != http.MethodGet {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(path, "/v1beta/models/"):
+		// All Gemini generation on this prefix is POST; GET is metadata.
+		return true
+	case strings.HasPrefix(path, "/v1/live/"):
+		return true
+	case strings.HasPrefix(path, "/v1/realtime/calls/"):
+		return true
+	}
+	return false
+}
+
+// apiKeyHashPrefix returns the first 12 hex characters of sha256(key). CPA never
+// logs API keys; this prefix matches the hash the usage sink stores, so a
+// throttle log line can be joined to a human-readable alias.
+func apiKeyHashPrefix(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// publishRPMLimitUsage emits a failed usage record for a throttled request.
+//
+// A request rejected here never reaches an executor, so the usual UsageReporter
+// never runs and the request would otherwise leave no trace downstream — the
+// usage database would simply show fewer requests, with nothing pointing at the
+// limit. The record carries the client API key so the sink can attribute it and
+// leaves model and provider empty, which the usage queue normalizes to
+// "unknown"; the request body is never parsed on this path.
+func publishRPMLimitUsage(c *gin.Context, apiKey string, limit int) {
+	usage.PublishRecord(c.Request.Context(), usage.Record{
+		APIKey:      apiKey,
+		RequestedAt: time.Now(),
+		Failed:      true,
+		Fail: usage.Failure{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       fmt.Sprintf(`{"error":{"code":"rpm_limit_exceeded","limit":%d}}`, limit),
+		},
+	})
+}
+
+// rpmLimitMiddleware enforces the per-client-API-key requests-per-minute cap.
+// It must be registered after AuthMiddleware, which is what sets "userApiKey".
+// Unlike a concurrency limit it holds nothing for the request's lifetime, so it
+// never interacts with SSE or WebSocket duration.
+func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || s.rpmLimiter == nil || s.cfg == nil || c.Request == nil || c.Request.URL == nil {
+			c.Next()
+			return
+		}
+		if rpmLimitExemptPath(c.Request.Method, c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		value, exists := c.Get("userApiKey")
+		if !exists || value == nil {
+			c.Next()
+			return
+		}
+		key := fmt.Sprint(value)
+		if key == "" {
+			c.Next()
+			return
+		}
+		limit := s.cfg.RPMLimitForContextValue(value)
+		ok, retryAfter := s.rpmLimiter.Allow(key, limit, time.Now())
+		if ok {
+			c.Next()
+			return
+		}
+		seconds := int(math.Ceil(retryAfter.Seconds()))
+		if seconds < 1 {
+			seconds = 1
+		}
+		log.Warnf("api key rpm limit exceeded: key_hash=%s limit=%d path=%s retry_after=%ds",
+			apiKeyHashPrefix(key), limit, c.Request.URL.Path, seconds)
+		publishRPMLimitUsage(c, key, limit)
+		c.Header("Retry-After", strconv.Itoa(seconds))
+		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
+			"message": "Request rate limit exceeded for this API key.",
+			"type":    "rate_limit_error",
+			"code":    "rpm_limit_exceeded",
+		}})
 	}
 }
