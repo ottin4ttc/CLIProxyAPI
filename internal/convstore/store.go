@@ -60,7 +60,7 @@ func (s *Store) Reconfigure(cfg Config) {
 	s.cfg = cfg
 }
 
-// Shutdown flushes queued appends. Open pendings are finalized as truncated.
+// Shutdown flushes queued writes. Open pendings are finalized as truncated.
 // Safe to call more than once (tests register it in t.Cleanup and also call
 // it explicitly to flush before assertions).
 func (s *Store) Shutdown() {

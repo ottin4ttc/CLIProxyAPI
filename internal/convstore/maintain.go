@@ -116,6 +116,10 @@ func walkSuffix(root, suffix string, fn func(path string, info os.FileInfo) erro
 // Both are handled the same way: record the archive's size before writing,
 // and on any failure in the sequence, truncate the archive back to that
 // size so it is left exactly as it was found.
+//
+// An empty sessionDir (no ".jsonl" entries) is a valid, intentional case:
+// appendZstdFrameFromDir writes no frame for it, and the directory is still
+// removed, leaving any pre-existing archive untouched.
 func archiveDirAndRemove(sessionDir string) error {
 	archivePath := sessionDir + ".jsonl.zst"
 	startSize, err := archiveSize(archivePath)
