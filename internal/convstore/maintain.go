@@ -5,35 +5,68 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
 
-// ArchiveIdle compresses active session files whose mtime is older than
-// idleBefore into "<name>.zst" and removes the plaintext original. When the
-// archive already exists (session resumed after a previous archive round),
-// a new zstd frame is appended — concatenated frames decode as one stream.
+// ArchiveIdle compresses session directories whose mtime is older than
+// idleBefore into "<sessionDir>.jsonl.zst" and removes the directory. When
+// the archive already exists (session resumed after a previous archive
+// round), a new zstd frame is appended — concatenated frames decode as one
+// stream.
 //
-// skip, when non-nil, is consulted for every candidate path; a true result
-// leaves the file untouched. This lets callers exclude files with in-flight
-// writer appends: archiving (and removing) a file whose writer queue still
-// holds a pending line for it would race the writer recreating the file,
-// producing non-monotonic turn numbers. Pass nil to skip nothing.
-func ArchiveIdle(dataDir string, idleBefore time.Time, skip func(path string) bool) error {
-	return walkSuffix(dataDir, ".jsonl", func(path string, info os.FileInfo) error {
-		if skip != nil && skip(path) {
+// skip, when non-nil, is consulted for every candidate directory; a true
+// result leaves it untouched. This lets callers exclude directories with
+// in-flight writer records: archiving and removing a directory the writer is
+// about to add a file to would drop that record. Pass nil to skip nothing.
+func ArchiveIdle(dataDir string, idleBefore time.Time, skip func(dir string) bool) error {
+	keyEntries, err := os.ReadDir(dataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
 			return nil
 		}
-		if !info.ModTime().Before(idleBefore) {
-			return nil
+		return err
+	}
+	var firstErr error
+	for _, keyEntry := range keyEntries {
+		if !keyEntry.IsDir() {
+			continue
 		}
-		if err := archiveAndRemove(path); err != nil {
-			return fmt.Errorf("archive %s: %w", path, err)
+		keyDir := filepath.Join(dataDir, keyEntry.Name())
+		sessionEntries, errRead := os.ReadDir(keyDir)
+		if errRead != nil {
+			if firstErr == nil {
+				firstErr = errRead
+			}
+			continue
 		}
-		return nil
-	})
+		for _, sessionEntry := range sessionEntries {
+			if !sessionEntry.IsDir() {
+				continue
+			}
+			sessionDir := filepath.Join(keyDir, sessionEntry.Name())
+			if skip != nil && skip(sessionDir) {
+				continue
+			}
+			info, errInfo := sessionEntry.Info()
+			if errInfo != nil {
+				if firstErr == nil {
+					firstErr = errInfo
+				}
+				continue
+			}
+			if !info.ModTime().Before(idleBefore) {
+				continue
+			}
+			if errArchive := archiveDirAndRemove(sessionDir); errArchive != nil && firstErr == nil {
+				firstErr = fmt.Errorf("archive %s: %w", sessionDir, errArchive)
+			}
+		}
+	}
+	return firstErr
 }
 
 // PurgeArchives removes archived sessions older than olderThan.
@@ -58,10 +91,6 @@ func walkSuffix(root, suffix string, fn func(path string, info os.FileInfo) erro
 		if info.IsDir() || !strings.HasSuffix(path, suffix) {
 			return nil
 		}
-		// ".jsonl" must not match ".jsonl.zst" files.
-		if suffix == ".jsonl" && strings.HasSuffix(path, ".jsonl.zst") {
-			return nil
-		}
 		if errFn := fn(path, info); errFn != nil && firstErr == nil {
 			firstErr = errFn
 		}
@@ -73,31 +102,31 @@ func walkSuffix(root, suffix string, fn func(path string, info os.FileInfo) erro
 	return firstErr
 }
 
-// archiveAndRemove appends sourcePath's content as a new zstd frame to
-// "<sourcePath>.zst" and, only on success, removes sourcePath. It owns the
-// rollback for every partial-failure mode of that pair:
+// archiveDirAndRemove concatenates sessionDir's records as a new zstd frame
+// on "<sessionDir>.jsonl.zst" and, only on success, removes the directory.
+// It owns the rollback for every partial-failure mode of that pair:
 //
 //   - encode failure (or a failed close of the encoder/archive): a torn,
 //     undecodable frame could otherwise be left in the archive under
 //     O_APPEND, permanently blocking decode of everything after it;
-//   - a failed os.Remove(sourcePath) after a successful compress: without
-//     rollback, the next archive round would re-append the same lines as a
-//     duplicate frame, since the plaintext source is still on disk.
+//   - a failed removal after a successful compress: without rollback, the
+//     next archive round would re-append the same records as a duplicate
+//     frame, since the directory is still on disk.
 //
 // Both are handled the same way: record the archive's size before writing,
 // and on any failure in the sequence, truncate the archive back to that
 // size so it is left exactly as it was found.
-func archiveAndRemove(sourcePath string) error {
-	archivePath := sourcePath + ".zst"
+func archiveDirAndRemove(sessionDir string) error {
+	archivePath := sessionDir + ".jsonl.zst"
 	startSize, err := archiveSize(archivePath)
 	if err != nil {
 		return err
 	}
-	if err := appendZstdFrame(archivePath, sourcePath); err != nil {
+	if err := appendZstdFrameFromDir(archivePath, sessionDir); err != nil {
 		rollbackArchive(archivePath, startSize)
 		return err
 	}
-	if err := os.Remove(sourcePath); err != nil {
+	if err := os.RemoveAll(sessionDir); err != nil {
 		rollbackArchive(archivePath, startSize)
 		return err
 	}
@@ -125,29 +154,56 @@ func rollbackArchive(archivePath string, size int64) {
 	}
 }
 
-// appendZstdFrame compresses sourcePath and appends the result as a new
-// zstd frame onto archivePath (created if absent). It performs no rollback
-// on its own; archiveAndRemove owns that.
-func appendZstdFrame(archivePath, sourcePath string) error {
-	src, err := os.Open(sourcePath)
+// appendZstdFrameFromDir compresses every record in sessionDir, in file-name
+// order, and appends the result as a single new zstd frame onto archivePath
+// (created if absent). File names carry a zero-padded millisecond prefix, so
+// name order is chronological order. Records are read one at a time, so peak
+// memory is one record rather than the whole session. It performs no
+// rollback on its own; archiveDirAndRemove owns that.
+func appendZstdFrameFromDir(archivePath, sessionDir string) error {
+	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if errClose := src.Close(); errClose != nil {
-			fmt.Fprintf(os.Stderr, "[conversation-store] close %s: %v\n", sourcePath, errClose)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
 		}
-	}()
+		names = append(names, entry.Name())
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+
 	dst, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
-	enc, err := zstd.NewWriter(dst)
-	if err != nil {
-		_ = dst.Close()
-		return err
+	enc, errEnc := zstd.NewWriter(dst)
+	if errEnc != nil {
+		if errClose := dst.Close(); errClose != nil {
+			fmt.Fprintf(os.Stderr, "[conversation-store] close %s: %v\n", archivePath, errClose)
+		}
+		return errEnc
 	}
-	_, errCopy := io.Copy(enc, src)
+	var errCopy error
+	for _, name := range names {
+		path := filepath.Join(sessionDir, name)
+		src, errOpen := os.Open(path)
+		if errOpen != nil {
+			errCopy = errOpen
+			break
+		}
+		_, errCopy = io.Copy(enc, src)
+		if errClose := src.Close(); errCopy == nil {
+			errCopy = errClose
+		}
+		if errCopy != nil {
+			break
+		}
+	}
 	if errClose := enc.Close(); errCopy == nil {
 		errCopy = errClose
 	}
