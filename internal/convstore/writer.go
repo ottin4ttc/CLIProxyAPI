@@ -102,9 +102,22 @@ func (w *Writer) Close() {
 	<-w.done
 }
 
+// writeRecord appends rather than truncates: a request ID finalized twice
+// within the same millisecond (host retry, or a stale pending flushed by a
+// repeated ID) produces the same file name, and truncating would silently
+// drop the earlier record. Appending keeps both — the file holds two JSON
+// lines, which the archiver concatenates correctly either way.
 func writeRecord(path string, line []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, line, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	_, errWrite := f.Write(line)
+	if errClose := f.Close(); errWrite == nil {
+		errWrite = errClose
+	}
+	return errWrite
 }

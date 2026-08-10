@@ -114,15 +114,16 @@ func TestNonStreamingRoundTrip(t *testing.T) {
 // RequestID-keyed pendings map: a second OnRequestBefore for the same id
 // (host retry) must not silently overwrite the first pending. Instead the
 // stale entry is finalized as "error" so the retry is visible in the log,
-// and the second request/response pair still records normally.
+// and the second request/response pair still records normally. Both
+// OnRequestBefore calls run at the same clock instant, so the stale and
+// retry records share the same {ts}-{requestID}.jsonl filename — this is
+// exactly the collision case writeRecord's append semantics exist for:
+// both lines must still land in that one file, not one overwriting the
+// other.
 func TestDuplicateRequestIDFinalizesStaleAsError(t *testing.T) {
-	s, dir, clock := testStore(t)
+	s, dir, _ := testStore(t)
 	body := `{"messages":[{"role":"user","content":"same"}]}`
 	s.OnRequestBefore(reqIntercept(body))
-	// Same RequestID means the stale and retry records would otherwise share
-	// a filename ({ts}-{requestID}.jsonl); advance the clock so each lands
-	// in its own file instead of the retry silently overwriting the stale one.
-	*clock = clock.Add(time.Millisecond)
 	s.OnRequestBefore(reqIntercept(body)) // same RequestID: stale pending finalized as "error"
 	s.OnResponse(pluginapi.ResponseInterceptRequest{RequestID: "req-1", OriginalRequest: []byte(body), Body: []byte(`{"n":2}`)})
 	s.Shutdown()
