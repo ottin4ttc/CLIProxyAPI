@@ -58,6 +58,22 @@ api-keys:
 #     api-keys:
 #       - "sk-yyy"
 
+# Optional: per-client-API-key request rate limits (requests per minute).
+# default-rpm applies to every key that is neither overridden nor bucket-exempt;
+# 0 (the default) means unlimited, so leaving this block out changes nothing.
+# exempt-buckets names codex buckets (see codex-buckets above) whose keys skip
+# the limit entirely; a name that does not exist there is a startup error.
+# overrides sets a per-key cap and wins over both; 0 exempts that key.
+# Rejected requests return 429 with a Retry-After header, never reach an
+# upstream account, and are recorded as failed usage events so they stay
+# visible downstream.
+# api-key-limits:
+#   default-rpm: 40
+#   exempt-buckets:
+#     - "anon"
+#   overrides:
+#     "sk-xxx": 120
+
 # Enable debug logging
 debug: false
 

@@ -61,6 +61,9 @@ type SDKConfig struct {
 	// top-level "bucket" value; unmapped keys only use unbucketed credentials.
 	CodexBuckets map[string]CodexBucket `yaml:"codex-buckets" json:"codex-buckets"`
 
+	// APIKeyLimits configures per-client-API-key request rate limits.
+	APIKeyLimits APIKeyLimits `yaml:"api-key-limits" json:"api-key-limits"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
@@ -137,6 +140,87 @@ func (c *SDKConfig) ValidateCodexBuckets() error {
 				return fmt.Errorf("codex-buckets: an api key is mapped to both bucket %q and bucket %q", prev, name)
 			}
 			seen[key] = name
+		}
+	}
+	return nil
+}
+
+// APIKeyLimits configures per-client-API-key request rate limits.
+type APIKeyLimits struct {
+	// DefaultRPM is the requests-per-minute cap applied to every client API key
+	// that is neither overridden nor bucket-exempt. 0 means unlimited.
+	DefaultRPM int `yaml:"default-rpm" json:"default-rpm"`
+
+	// ExemptBuckets lists codex bucket names whose client API keys are exempt
+	// from rate limiting. Names must exist in CodexBuckets.
+	ExemptBuckets []string `yaml:"exempt-buckets,omitempty" json:"exempt-buckets,omitempty"`
+
+	// Overrides maps a client API key to its own cap. An override wins over
+	// both ExemptBuckets and DefaultRPM; 0 exempts that key.
+	Overrides map[string]int `yaml:"overrides,omitempty" json:"overrides,omitempty"`
+}
+
+// RPMLimitForAPIKey returns the requests-per-minute cap for a client API key.
+// 0 means unlimited. Precedence is Overrides > ExemptBuckets > DefaultRPM.
+// Configured keys and bucket names are trimmed before comparison, matching
+// CodexBucketForAPIKey; apiKey is compared as-is since it comes straight from
+// the caller's request.
+func (c *SDKConfig) RPMLimitForAPIKey(apiKey string) int {
+	if c == nil || apiKey == "" {
+		return 0
+	}
+	for key, limit := range c.APIKeyLimits.Overrides {
+		if strings.TrimSpace(key) == apiKey {
+			if limit < 0 {
+				return 0
+			}
+			return limit
+		}
+	}
+	if bucket := c.CodexBucketForAPIKey(apiKey); bucket != "" {
+		for _, name := range c.APIKeyLimits.ExemptBuckets {
+			if strings.TrimSpace(name) == bucket {
+				return 0
+			}
+		}
+	}
+	if c.APIKeyLimits.DefaultRPM < 0 {
+		return 0
+	}
+	return c.APIKeyLimits.DefaultRPM
+}
+
+// RPMLimitForContextValue resolves the cap for a raw context value (typically a
+// gin "userApiKey" entry) by formatting it and delegating to RPMLimitForAPIKey,
+// mirroring CodexBucketForContextValue so every call site shares one lookup.
+func (c *SDKConfig) RPMLimitForContextValue(v any) int {
+	if c == nil || v == nil {
+		return 0
+	}
+	return c.RPMLimitForAPIKey(fmt.Sprint(v))
+}
+
+// ValidateAPIKeyLimits rejects negative caps and exempt-bucket names that do
+// not exist in CodexBuckets, so a typo cannot silently drop an exemption.
+func (c *SDKConfig) ValidateAPIKeyLimits() error {
+	if c == nil {
+		return nil
+	}
+	if c.APIKeyLimits.DefaultRPM < 0 {
+		return fmt.Errorf("api-key-limits: default-rpm must not be negative")
+	}
+	for key, limit := range c.APIKeyLimits.Overrides {
+		if limit < 0 {
+			return fmt.Errorf("api-key-limits: overrides[%q] must not be negative", key)
+		}
+	}
+	for _, name := range c.APIKeyLimits.ExemptBuckets {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return fmt.Errorf("api-key-limits: exempt-buckets must not contain an empty name")
+		}
+		if _, ok := c.CodexBuckets[trimmed]; !ok {
+			return fmt.Errorf("api-key-limits: exempt-buckets references unknown bucket %q", trimmed)
 		}
 	}
 	return nil

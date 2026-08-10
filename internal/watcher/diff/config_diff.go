@@ -58,6 +58,14 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.ClaudeCode.DisableCloakingModelList != newCfg.ClaudeCode.DisableCloakingModelList {
 		changes = append(changes, fmt.Sprintf("claude-code.disable-cloaking-model-list: %t -> %t", oldCfg.ClaudeCode.DisableCloakingModelList, newCfg.ClaudeCode.DisableCloakingModelList))
 	}
+	if !reflect.DeepEqual(oldCfg.APIKeyLimits, newCfg.APIKeyLimits) {
+		// Override keys are API keys; only their count is safe to log.
+		changes = append(changes, fmt.Sprintf(
+			"api-key-limits: default-rpm %d -> %d, exempt-buckets %v -> %v, overrides %d -> %d keys",
+			oldCfg.APIKeyLimits.DefaultRPM, newCfg.APIKeyLimits.DefaultRPM,
+			oldCfg.APIKeyLimits.ExemptBuckets, newCfg.APIKeyLimits.ExemptBuckets,
+			len(oldCfg.APIKeyLimits.Overrides), len(newCfg.APIKeyLimits.Overrides)))
+	}
 	if oldCfg.DisableImageGeneration != newCfg.DisableImageGeneration {
 		changes = append(changes, fmt.Sprintf("disable-image-generation: %v -> %v", oldCfg.DisableImageGeneration, newCfg.DisableImageGeneration))
 	}
