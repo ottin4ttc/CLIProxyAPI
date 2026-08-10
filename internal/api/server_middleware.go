@@ -32,6 +32,8 @@ var corsExposedResponseHeaders = []string{
 	"X-SERVER-VERSION",
 	"X-SERVER-BUILD-DATE",
 	"Location",
+	// Retry-After is set by rpmLimitMiddleware on 429s; without exposing it a
+	// browser client cannot read it and cannot back off correctly.
 	"Retry-After",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
@@ -240,9 +242,18 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 }
 
 // rpmLimitExemptPath reports whether a proxy path is excluded from RPM
-// accounting: model metadata, local token counting, and the sideband companion
-// channels of a call that was already counted when it was opened. Counting a
-// sideband would charge one call twice.
+// accounting: model metadata, POST /v1/messages/count_tokens, and the sideband
+// companion channels of a call that was already counted when it was opened.
+// Counting a sideband would charge one call twice.
+//
+// count_tokens is exempt because it produces no usage_events row and was
+// therefore excluded from the usage_events measurement the default limit was
+// calibrated against — not because it is "local". For Anthropic-family
+// credentials it is a real upstream HTTP call to api.anthropic.com that
+// consumes a credential from the shared pool (see
+// shouldUseClaudeUpstreamTokenCount in claude_executor_tokens.go). This is a
+// known uncounted path: a client can drive real, paid upstream traffic
+// through it without ever showing up in this middleware's count.
 func rpmLimitExemptPath(method, path string) bool {
 	switch path {
 	case "/v1/models", "/v1beta/models", "/v1/messages/count_tokens", "/v1/realtime":
@@ -295,6 +306,15 @@ func publishRPMLimitUsage(c *gin.Context, apiKey string, limit int) {
 // It must be registered after AuthMiddleware, which is what sets "userApiKey".
 // Unlike a concurrency limit it holds nothing for the request's lifetime, so it
 // never interacts with SSE or WebSocket duration.
+//
+// It counts requests, not generations: GET /v1/responses and
+// GET /backend-api/codex/responses are WebSocket upgrades, and a WebSocket
+// connection consumes exactly one unit of budget at handshake regardless of
+// how many generations it later carries over that socket, each of which
+// writes its own usage_events row. RPM figures derived from usage_events
+// therefore overstate what this middleware sees for WebSocket-transport
+// clients; anyone re-calibrating default-rpm from usage_events must split by
+// endpoint (GET vs POST) first. See the design doc for the measured impact.
 func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s == nil || s.rpmLimiter == nil || s.cfg == nil || c.Request == nil || c.Request.URL == nil {
@@ -305,6 +325,11 @@ func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		// userApiKey holds the access provider's Principal, not necessarily a
+		// configured API key: the built-in config-api-key provider sets it to the
+		// real key, but a plugin frontend-auth provider (see
+		// pluginhost/adapters_auth.go) may return an arbitrary constant Principal,
+		// in which case all of that plugin's traffic shares one bucket here.
 		value, exists := c.Get("userApiKey")
 		if !exists || value == nil {
 			c.Next()
@@ -315,7 +340,7 @@ func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		limit := s.cfg.RPMLimitForContextValue(value)
+		limit := s.cfg.RPMLimitForAPIKey(key)
 		ok, retryAfter := s.rpmLimiter.Allow(key, limit, time.Now())
 		if ok {
 			c.Next()
@@ -324,6 +349,16 @@ func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 		seconds := int(math.Ceil(retryAfter.Seconds()))
 		if seconds < 1 {
 			seconds = 1
+		}
+		// The window is one minute, so a correct retryAfter can never
+		// legitimately exceed 60s. retryAfter is derived from a stored
+		// timestamp and the current now (Allow provides no bound against a
+		// wall-clock step), so if the clock steps backwards it can come out
+		// far larger than one window. Claude Code / Codex CLI honor this
+		// header verbatim, so an unclamped value would silence a client for
+		// far longer than the window on a clock glitch alone.
+		if seconds > 60 {
+			seconds = 60
 		}
 		log.Warnf("api key rpm limit exceeded: key_hash=%s limit=%d path=%s retry_after=%ds",
 			apiKeyHashPrefix(key), limit, c.Request.URL.Path, seconds)

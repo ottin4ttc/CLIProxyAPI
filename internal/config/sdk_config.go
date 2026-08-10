@@ -200,8 +200,10 @@ func (c *SDKConfig) RPMLimitForContextValue(v any) int {
 	return c.RPMLimitForAPIKey(fmt.Sprint(v))
 }
 
-// ValidateAPIKeyLimits rejects negative caps and exempt-bucket names that do
-// not exist in CodexBuckets, so a typo cannot silently drop an exemption.
+// ValidateAPIKeyLimits rejects negative caps, exempt-bucket names that do
+// not exist in CodexBuckets, and Overrides keys that collide after trimming,
+// so a typo cannot silently drop an exemption and a stray space cannot leave
+// two entries racing over the same key.
 func (c *SDKConfig) ValidateAPIKeyLimits() error {
 	if c == nil {
 		return nil
@@ -209,10 +211,21 @@ func (c *SDKConfig) ValidateAPIKeyLimits() error {
 	if c.APIKeyLimits.DefaultRPM < 0 {
 		return fmt.Errorf("api-key-limits: default-rpm must not be negative")
 	}
+	// RPMLimitForAPIKey compares strings.TrimSpace(key) against the caller's
+	// key, so "sk-a" and " sk-a " are distinct map keys that both match the
+	// same caller — Go's random map iteration order would then make the
+	// effective limit flip between the two on every request. Mirrors how
+	// ValidateCodexBuckets rejects one api key mapped into two buckets.
+	seenOverrideKeys := make(map[string]string)
 	for key, limit := range c.APIKeyLimits.Overrides {
 		if limit < 0 {
 			return fmt.Errorf("api-key-limits: overrides[%q] must not be negative", key)
 		}
+		trimmed := strings.TrimSpace(key)
+		if prev, ok := seenOverrideKeys[trimmed]; ok {
+			return fmt.Errorf("api-key-limits: overrides keys %q and %q both trim to %q", prev, key, trimmed)
+		}
+		seenOverrideKeys[trimmed] = key
 	}
 	for _, name := range c.APIKeyLimits.ExemptBuckets {
 		trimmed := strings.TrimSpace(name)

@@ -2,6 +2,7 @@ package apikeylimit
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -101,18 +102,29 @@ func TestRetryAfterAlwaysPositive(t *testing.T) {
 }
 
 func TestConcurrentAllow(t *testing.T) {
+	// All goroutines race against the same fixed now, so they all land in the
+	// same window and compete for the same budget. If Allow lost an update
+	// under concurrent access, more than limit calls would be allowed; if it
+	// double-counted, fewer would be. Either failure mode is invisible without
+	// this exact-count assertion, which is the whole point of the test.
+	const goroutines = 200
+	const limit = 37
 	l := New()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	var allowed int64
+	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
-		go func(n int) {
+		go func() {
 			defer wg.Done()
-			for j := 0; j < 20; j++ {
-				l.Allow("sk-a", 100, base.Add(time.Duration(n*20+j)*time.Millisecond))
+			if ok, _ := l.Allow("sk-a", limit, base); ok {
+				atomic.AddInt64(&allowed, 1)
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
+	if allowed != limit {
+		t.Fatalf("allowed = %d, want exactly %d", allowed, limit)
+	}
 }
 
 func TestNilLimiterAllows(t *testing.T) {

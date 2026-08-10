@@ -107,3 +107,29 @@ func TestValidateAPIKeyLimits(t *testing.T) {
 		t.Fatal("expected error for whitespace-only exempt bucket name")
 	}
 }
+
+func TestValidateAPIKeyLimitsRejectsDuplicateOverrideKeyAfterTrim(t *testing.T) {
+	cfg := &SDKConfig{APIKeyLimits: APIKeyLimits{
+		DefaultRPM: 40,
+		Overrides: map[string]int{
+			"sk-a":   10,
+			" sk-a ": 100,
+		},
+	}}
+	if err := cfg.ValidateAPIKeyLimits(); err == nil {
+		t.Fatal("expected error: both keys trim to sk-a and would race in RPMLimitForAPIKey's map iteration")
+	}
+}
+
+func TestValidateAPIKeyLimitsAllowsDistinctOverrideKeys(t *testing.T) {
+	cfg := &SDKConfig{APIKeyLimits: APIKeyLimits{
+		DefaultRPM: 40,
+		Overrides: map[string]int{
+			"sk-a": 10,
+			"sk-b": 20,
+		},
+	}}
+	if err := cfg.ValidateAPIKeyLimits(); err != nil {
+		t.Fatalf("distinct override keys should not be rejected: %v", err)
+	}
+}
