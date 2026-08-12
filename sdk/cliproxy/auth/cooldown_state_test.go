@@ -244,14 +244,34 @@ func TestManager_MarkResult_PersistsCooldownOnlyWhenStateChanges(t *testing.T) {
 		t.Fatalf("cooldown failure saved cooldown state %d times, want 1", got)
 	}
 
+	// A success inside the open window keeps the cooldown untouched and must
+	// not rewrite the persisted state.
 	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
-	if got := store.saveCount.Load(); got != 2 {
-		t.Fatalf("cooldown clear saved cooldown state %d times, want 2", got)
+	if got := store.saveCount.Load(); got != 1 {
+		t.Fatalf("in-window success saved cooldown state %d times, want 1", got)
+	}
+
+	// Once the window expires, a success clears the state; the persisted
+	// record already lapsed with the deadline, so nothing new is saved.
+	expired := time.Now().Add(-time.Second)
+	manager.mu.Lock()
+	if state := manager.auths[auth.ID].ModelStates["grok-4"]; state != nil {
+		state.NextRetryAfter = expired
+	}
+	manager.auths[auth.ID].NextRetryAfter = expired
+	manager.mu.Unlock()
+
+	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	if got := store.saveCount.Load(); got != 1 {
+		t.Fatalf("post-expiry success saved cooldown state %d times, want 1", got)
+	}
+	if updated, ok := manager.GetByID(auth.ID); !ok || updated.ModelStates["grok-4"] == nil || updated.ModelStates["grok-4"].Unavailable {
+		t.Fatal("expected post-expiry success to clear the model state")
 	}
 
 	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
-	if got := store.saveCount.Load(); got != 2 {
-		t.Fatalf("clean success saved cooldown state %d times, want 2", got)
+	if got := store.saveCount.Load(); got != 1 {
+		t.Fatalf("clean success saved cooldown state %d times, want 1", got)
 	}
 }
 

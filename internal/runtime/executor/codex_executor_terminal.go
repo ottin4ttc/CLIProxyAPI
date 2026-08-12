@@ -282,18 +282,6 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
 		strings.Contains(message, "too many tokens")
 }
 
-// codexOverloadCooldown is the explicit cooldown hint attached to transient
-// overload/capacity 429s that carry no reset metadata. Without it the quota
-// backoff starts at one second, which expires before a human-paced retry
-// arrives, so session affinity re-pins the same overloaded credential. Five
-// minutes also cuts futile probes during a sustained overload window: each auth
-// probes the model at most once per five minutes instead of once per minute.
-// Nothing staggers those windows - they start whenever an auth happens to fail -
-// so a busy pool spreads its probes only as its arrival times happen to be
-// spread, and a small or idle pool whose credentials fail together re-probes
-// only once every five minutes.
-const codexOverloadCooldown = 5 * time.Minute
-
 // Failure causes attached to Codex status errors so the auth layer can tell a
 // model-wide upstream outage (retry on another model) from per-account quota
 // exhaustion (retry on another credential).
@@ -322,11 +310,11 @@ func newCodexStatusErr(statusCode int, body []byte) statusErr {
 	cause := codexFailureCause(body)
 	body = classifyCodexStatusError(errCode, body)
 	err := statusErr{code: errCode, msg: string(body), cause: cause}
+	// Overload/capacity 429s deliberately carry no retryAfter: the auth layer
+	// routes cause "overload" onto its own escalating cooldown ladder, and a
+	// hint here would bypass it.
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
-	} else if errCode == http.StatusTooManyRequests && (isCodexOverloadedError(body) || isCodexModelCapacityError(body)) {
-		cooldown := codexOverloadCooldown
-		err.retryAfter = &cooldown
 	}
 	return err
 }

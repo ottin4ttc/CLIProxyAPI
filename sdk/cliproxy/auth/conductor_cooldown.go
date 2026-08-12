@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -735,16 +736,25 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				// Retain active credential-scoped cooldown
 			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
-				resetModelState(state, now)
-				updateAggregatedAvailability(auth, now)
-				if !hasModelError(auth, now) {
-					auth.LastError = nil
-					auth.StatusMessage = ""
-					auth.Status = StatusActive
+				if cooldownWindowActive(state, now) {
+					// A success completing inside an open cooldown window comes
+					// from a request admitted before the window was armed; it
+					// says nothing about the credential's health now. Cooldown
+					// windows are only ever extended, never shortened.
+					log.Debugf("cooldown: success inside open window kept | auth=%s model=%s until=%s",
+						auth.ID, modelKey, cooldownWindowDeadline(state).Format(time.RFC3339))
+				} else {
+					resetModelState(state, now)
+					updateAggregatedAvailability(auth, now)
+					if !hasModelError(auth, now) {
+						auth.LastError = nil
+						auth.StatusMessage = ""
+						auth.Status = StatusActive
+					}
+					auth.UpdatedAt = now
+					shouldResumeModel = true
+					clearModelQuota = true
 				}
-				auth.UpdatedAt = now
-				shouldResumeModel = true
-				clearModelQuota = true
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
@@ -825,25 +835,53 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						case 429:
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
+							reason := strings.TrimSpace(state.Quota.Reason)
+							cause := FailureCauseQuota
+							if result.Error != nil && strings.TrimSpace(result.Error.Cause) == FailureCauseOverload {
+								cause = FailureCauseOverload
+							}
 							if !disableCooling {
-								if result.RetryAfter != nil {
+								windowOpen := state.Quota.NextRecoverAt.After(now)
+								// A quota RetryAfter is the upstream's authoritative
+								// resets_at and always rewrites the window; everything
+								// else reuses an open window untouched.
+								reuse := windowOpen && (cause == FailureCauseOverload || result.RetryAfter == nil)
+								if !reuse {
+									// The ladders must not cross-contaminate: when a
+									// fresh window opens for a different cause than
+									// the previous window recorded, reseed the level.
+									if reason != "" && reason != cause {
+										backoffLevel = 0
+									}
+									reason = cause
+								}
+								seeded := QuotaState{NextRecoverAt: state.Quota.NextRecoverAt, BackoffLevel: backoffLevel}
+								// Overload takes the 5..30 minute ladder even when
+								// the error carries a RetryAfter hint; RetryAfter
+								// stays authoritative only for quota, where it is
+								// the upstream's resets_at.
+								if cause == FailureCauseOverload {
+									next, backoffLevel = overloadCooldownAfterFailure(seeded, now)
+								} else if result.RetryAfter != nil {
 									next = now.Add(*result.RetryAfter)
 								} else {
-									next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
+									next, backoffLevel = quotaCooldownAfterFailure(seeded, now)
 								}
 								if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
 									next = state.Quota.NextRecoverAt
 								}
+							} else {
+								reason = cause
 							}
 							state.NextRetryAfter = next
 							state.Quota = QuotaState{
 								Exceeded:      true,
-								Reason:        "quota",
+								Reason:        reason,
 								NextRecoverAt: next,
 								BackoffLevel:  backoffLevel,
 							}
 							if !disableCooling {
-								suspendReason = "quota"
+								suspendReason = reason
 								shouldSuspendModel = true
 								setModelQuota = true
 							}
@@ -895,6 +933,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.Status = StatusError
 					auth.UpdatedAt = now
 					updateAggregatedAvailability(auth, now)
+					if cooldownWindowActive(state, now) {
+						log.Debugf("cooldown: window armed | auth=%s model=%s cause=%s level=%d until=%s",
+							auth.ID, result.Model, cooldownReason(state.StatusMessage, state.Quota, state.LastError),
+							state.Quota.BackoffLevel, cooldownWindowDeadline(state).Format(time.RFC3339))
+					}
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
@@ -1095,6 +1138,27 @@ func mergeModelState(target, source *ModelState) *ModelState {
 	return target
 }
 
+// cooldownWindowActive reports whether the model state still holds an
+// unexpired cooldown window.
+func cooldownWindowActive(state *ModelState, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	return state.NextRetryAfter.After(now) || state.Quota.NextRecoverAt.After(now)
+}
+
+// cooldownWindowDeadline returns the later of the state's two recovery
+// deadlines, for logging.
+func cooldownWindowDeadline(state *ModelState) time.Time {
+	if state == nil {
+		return time.Time{}
+	}
+	if state.Quota.NextRecoverAt.After(state.NextRetryAfter) {
+		return state.Quota.NextRecoverAt
+	}
+	return state.NextRetryAfter
+}
+
 func resetModelState(state *ModelState, now time.Time) {
 	if state == nil {
 		return
@@ -1141,6 +1205,8 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	quotaExceeded := false
 	quotaRecover := time.Time{}
 	maxBackoffLevel := 0
+	sharedReason := ""
+	reasonsAgree := true
 	hasState := false
 	for _, state := range auth.ModelStates {
 		if state == nil {
@@ -1167,6 +1233,11 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 			allUnavailable = false
 		}
 		if state.Quota.Exceeded {
+			if reason := strings.TrimSpace(state.Quota.Reason); !quotaExceeded {
+				sharedReason = reason
+			} else if reason != sharedReason {
+				reasonsAgree = false
+			}
 			quotaExceeded = true
 			if quotaRecover.IsZero() || (!state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.Before(quotaRecover)) {
 				quotaRecover = state.Quota.NextRecoverAt
@@ -1188,7 +1259,13 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	}
 	if quotaExceeded {
 		auth.Quota.Exceeded = true
-		auth.Quota.Reason = "quota"
+		// Roll up the shared failure cause when every exceeded model state
+		// agrees on one; otherwise fall back to the historical "quota".
+		if reasonsAgree && sharedReason != "" {
+			auth.Quota.Reason = sharedReason
+		} else {
+			auth.Quota.Reason = FailureCauseQuota
+		}
 		if auth.Quota.NextRecoverAt.After(quotaRecover) {
 			quotaRecover = auth.Quota.NextRecoverAt
 		}
@@ -1915,12 +1992,29 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = now.Add(12 * time.Hour)
 		}
 	case 429:
-		auth.StatusMessage = "quota exhausted"
+		cause := FailureCauseQuota
+		if resultErr != nil && strings.TrimSpace(resultErr.Cause) == FailureCauseOverload {
+			cause = FailureCauseOverload
+		}
+		if cause == FailureCauseOverload {
+			auth.StatusMessage = "server overloaded"
+		} else {
+			auth.StatusMessage = "quota exhausted"
+		}
 		auth.Quota.Exceeded = true
-		auth.Quota.Reason = "quota"
 		var next time.Time
 		if !disableCooling {
-			if retryAfter != nil {
+			windowOpen := auth.Quota.NextRecoverAt.After(now)
+			reuse := windowOpen && (cause == FailureCauseOverload || retryAfter == nil)
+			if !reuse {
+				if reason := strings.TrimSpace(auth.Quota.Reason); reason != "" && reason != cause {
+					auth.Quota.BackoffLevel = 0
+				}
+				auth.Quota.Reason = cause
+			}
+			if cause == FailureCauseOverload {
+				next, auth.Quota.BackoffLevel = overloadCooldownAfterFailure(auth.Quota, now)
+			} else if retryAfter != nil {
 				next = now.Add(*retryAfter)
 			} else {
 				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
@@ -1928,6 +2022,8 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
 				next = auth.Quota.NextRecoverAt
 			}
+		} else {
+			auth.Quota.Reason = cause
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
@@ -1963,6 +2059,39 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int)
 		next = now.Add(cooldown)
 	}
 	return next, nextLevel
+}
+
+// overloadCooldownAfterFailure returns the recovery deadline and backoff level
+// for an overload failure observed at now. Failures that land while a previous
+// window is still open reuse that window instead of escalating, so a burst of
+// concurrent in-flight failures advances the backoff ladder at most once per
+// window and a cooldown is only ever extended, never shortened.
+func overloadCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
+	if quota.NextRecoverAt.After(now) {
+		return quota.NextRecoverAt, quota.BackoffLevel
+	}
+	cooldown, nextLevel := nextOverloadCooldown(quota.BackoffLevel)
+	var next time.Time
+	if cooldown > 0 {
+		next = now.Add(cooldown)
+	}
+	return next, nextLevel
+}
+
+// nextOverloadCooldown returns the next cooldown duration and updated backoff
+// level for repeated overload errors: 5 -> 10 -> 20 -> 30 minutes (ceiling).
+func nextOverloadCooldown(prevLevel int) (time.Duration, int) {
+	if prevLevel < 0 {
+		prevLevel = 0
+	}
+	cooldown := overloadBackoffBase * time.Duration(1<<prevLevel)
+	if cooldown < overloadBackoffBase {
+		cooldown = overloadBackoffBase
+	}
+	if cooldown >= overloadBackoffMax {
+		return overloadBackoffMax, prevLevel
+	}
+	return cooldown, prevLevel + 1
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.

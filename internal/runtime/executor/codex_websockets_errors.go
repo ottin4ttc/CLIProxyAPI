@@ -59,14 +59,14 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 	// exhausted (not). An empty cause there silently disables the model fallback
 	// in any deployment mixing websocket and HTTP clients.
 	statusError := statusErr{code: status, msg: string(out), cause: codexFailureCause(out)}
+	// Overload/capacity 429s deliberately carry no retryAfter: the auth layer
+	// routes cause "overload" onto its own escalating cooldown ladder, and a
+	// hint here would bypass it.
 	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
 		statusError.retryAfter = retryAfter
 	} else if isCodexWebsocketConnectionLimitError(payload) {
 		retryAfter := time.Duration(0)
 		statusError.retryAfter = &retryAfter
-	} else if status == http.StatusTooManyRequests && (isCodexOverloadedError(out) || isCodexModelCapacityError(out)) {
-		cooldown := codexOverloadCooldown
-		statusError.retryAfter = &cooldown
 	}
 	return statusErrWithHeaders{
 		statusErr: statusError,

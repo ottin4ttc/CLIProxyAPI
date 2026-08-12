@@ -62,8 +62,28 @@ func TestStatusErrFailureCauseDefaultsEmpty(t *testing.T) {
 	}
 }
 
-func TestCodexOverloadCooldownIsFiveMinutes(t *testing.T) {
-	if codexOverloadCooldown != 5*time.Minute {
-		t.Fatalf("codexOverloadCooldown = %v, want 5m", codexOverloadCooldown)
+// Overload/capacity 429s must not carry a retryAfter hint: the auth layer
+// routes cause "overload" onto its own escalating cooldown ladder.
+func TestNewCodexStatusErrOverloadCarriesNoRetryAfter(t *testing.T) {
+	bodies := []string{
+		`{"error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded."}}`,
+		`{"error":{"message":"Selected model is at capacity. Please try a different model."}}`,
+	}
+	for _, body := range bodies {
+		err := newCodexStatusErr(http.StatusOK, []byte(body))
+		if got := err.StatusCode(); got != http.StatusTooManyRequests {
+			t.Fatalf("status code = %d, want %d", got, http.StatusTooManyRequests)
+		}
+		if err.RetryAfter() != nil {
+			t.Fatalf("retryAfter = %v, want nil for overload/capacity", *err.RetryAfter())
+		}
+	}
+}
+
+// usage_limit_reached keeps its parsed reset metadata.
+func TestNewCodexStatusErrUsageLimitKeepsRetryAfter(t *testing.T) {
+	err := newCodexStatusErr(http.StatusOK, []byte(`{"error":{"type":"usage_limit_reached","resets_in_seconds":60}}`))
+	if err.RetryAfter() == nil || *err.RetryAfter() != 60*time.Second {
+		t.Fatalf("retryAfter = %v, want 60s from resets_in_seconds", err.RetryAfter())
 	}
 }

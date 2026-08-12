@@ -1545,8 +1545,11 @@ func TestParseCodexWebsocketErrorSynthesizes429ForStatuslessOverloaded(t *testin
 		t.Fatalf("status = %#v, want 429", err)
 	}
 	retryable, ok := err.(interface{ RetryAfter() *time.Duration })
-	if !ok || retryable.RetryAfter() == nil || *retryable.RetryAfter() != codexOverloadCooldown {
-		t.Fatalf("expected %v retryAfter hint for status-less overloaded error", codexOverloadCooldown)
+	if !ok {
+		t.Fatal("expected RetryAfter accessor on websocket error")
+	}
+	if retryable.RetryAfter() != nil {
+		t.Fatalf("retryAfter = %v, want nil (overload takes the auth-layer ladder)", *retryable.RetryAfter())
 	}
 }
 

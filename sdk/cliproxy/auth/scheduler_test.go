@@ -1902,6 +1902,17 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 		t.Fatalf("scheduler.pickSingle() after cooldown auth = %v, want auth-b", got)
 	}
 
+	// A success only clears the cooldown once the window has expired; an
+	// in-window success is stale evidence and keeps the window. Expire the
+	// 1s-ladder window before reporting the recovery probe's success.
+	expired := time.Now().Add(-time.Second)
+	manager.mu.Lock()
+	if state := manager.auths["auth-a"].ModelStates["test-model"]; state != nil {
+		state.NextRetryAfter = expired
+		state.Quota.NextRecoverAt = expired
+	}
+	manager.mu.Unlock()
+
 	manager.MarkResult(context.Background(), Result{
 		AuthID:   "auth-a",
 		Provider: "gemini",
