@@ -152,6 +152,7 @@ type recentRequestBucket struct {
 	bucketID int64
 	success  int64
 	failed   int64
+	overload int64
 }
 
 type recentRequestRing struct {
@@ -159,9 +160,10 @@ type recentRequestRing struct {
 }
 
 type RecentRequestBucket struct {
-	Time    string `json:"time"`
-	Success int64  `json:"success"`
-	Failed  int64  `json:"failed"`
+	Time     string `json:"time"`
+	Success  int64  `json:"success"`
+	Failed   int64  `json:"failed"`
+	Overload int64  `json:"overload"`
 }
 
 // QuotaState contains limiter tracking data for a credential.
@@ -215,7 +217,7 @@ func formatRecentRequestBucketLabel(bucketID int64) string {
 	return start.Format("15:04") + "-" + end.Format("15:04")
 }
 
-func (a *Auth) recordRecentRequest(now time.Time, success bool) {
+func (a *Auth) recordRecentRequest(now time.Time, success, overload bool) {
 	if a == nil {
 		return
 	}
@@ -226,12 +228,16 @@ func (a *Auth) recordRecentRequest(now time.Time, success bool) {
 		bucket.bucketID = bucketID
 		bucket.success = 0
 		bucket.failed = 0
+		bucket.overload = 0
 	}
 	if success {
 		bucket.success++
 		return
 	}
 	bucket.failed++
+	if overload {
+		bucket.overload++
+	}
 }
 
 func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
@@ -251,6 +257,7 @@ func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
 		if bucket.bucketID == bucketID {
 			entry.Success = bucket.success
 			entry.Failed = bucket.failed
+			entry.Overload = bucket.overload
 		}
 		out = append(out, entry)
 	}

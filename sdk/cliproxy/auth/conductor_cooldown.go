@@ -724,7 +724,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if trackCooldownState {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
-		auth.recordRecentRequest(now, result.Success)
+		auth.recordRecentRequest(now, result.Success, resultIsOverload(result))
 		if result.Success {
 			auth.Success++
 		} else {
@@ -1021,7 +1021,7 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
-		auth.recordRecentRequest(now, result.Success)
+		auth.recordRecentRequest(now, result.Success, resultIsOverload(result))
 		if result.Success {
 			auth.Success++
 		} else {
@@ -1366,6 +1366,11 @@ func isRequestScopedError(err error) bool {
 	}
 	requestErr, ok := errors.AsType[cliproxyexecutor.RequestScopedError](err)
 	return ok && requestErr != nil && requestErr.IsRequestScoped()
+}
+
+// resultIsOverload reports whether a failed result was classified as upstream overload.
+func resultIsOverload(result Result) bool {
+	return !result.Success && result.Error != nil && strings.TrimSpace(result.Error.Cause) == FailureCauseOverload
 }
 
 // Failure causes propagated from provider executors.
