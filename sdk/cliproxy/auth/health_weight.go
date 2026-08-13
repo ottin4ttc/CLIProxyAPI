@@ -153,11 +153,11 @@ func (s *HealthWeightedRoundRobinSelector) Pick(ctx context.Context, provider, m
 		stat := stats[auth.ID]
 		tier := healthTier(stat.total, stat.overload)
 		guarded := applyShareGuard(tier, stat.total, poolTotal, len(available))
-		if guarded != tier {
-			log.Infof("health-weight: share guard | auth=%s window_total=%d pool_total=%d pool_size=%d tier %d->%d",
-				auth.ID, stat.total, poolTotal, len(available), tier, guarded)
-		}
 		if last := s.lastTiers[auth.ID]; last != guarded {
+			if guarded != tier {
+				log.Infof("health-weight: share guard | auth=%s window_total=%d pool_total=%d pool_size=%d tier %d->%d",
+					auth.ID, stat.total, poolTotal, len(available), tier, guarded)
+			}
 			log.Infof("health-weight: tier change | auth=%s %d->%d window_total=%d window_overload=%d",
 				auth.ID, last, guarded, stat.total, stat.overload)
 			s.lastTiers[auth.ID] = guarded
