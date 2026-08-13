@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestMarkResultRecordsOverloadInRing(t *testing.T) {
@@ -138,5 +140,170 @@ func TestApplyShareGuard(t *testing.T) {
 	// Small pools never trigger (fair share 50%, cap 150%).
 	if got := applyShareGuard(healthTierBoostMax, 60, 100, 2); got != healthTierBoostMax {
 		t.Fatalf("small pool: tier = %d, want %d", got, healthTierBoostMax)
+	}
+}
+
+func TestHealthWeightedSelectorBoostsImmuneAuth(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(1_700_000_000, 0)
+	prev := base.Add(-time.Duration(recentRequestBucketSeconds) * time.Second)
+
+	immune := &Auth{ID: "immune"}
+	sick := &Auth{ID: "sick"}
+	for i := 0; i < 100; i++ {
+		immune.recordRecentRequest(prev, true, false)
+	}
+	for i := 0; i < 90; i++ {
+		sick.recordRecentRequest(prev, true, false)
+	}
+	for i := 0; i < 10; i++ {
+		sick.recordRecentRequest(prev, false, true) // 10% overload → floor tier
+	}
+
+	selector := &HealthWeightedRoundRobinSelector{nowFn: func() time.Time { return base }}
+	counts := make(map[string]int)
+	for i := 0; i < 90; i++ {
+		got, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, []*Auth{immune, sick})
+		if errPick != nil {
+			t.Fatalf("Pick() #%d error = %v", i, errPick)
+		}
+		counts[got.ID]++
+	}
+	// Tiers 8 (×4) vs 1 (×0.5) → 8:1 split of 90 picks.
+	if counts["immune"] != 80 || counts["sick"] != 10 {
+		t.Fatalf("counts = %#v, want immune=80 sick=10", counts)
+	}
+}
+
+func TestHealthWeightedSelectorNeutralWhenInsufficientSamples(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(1_700_000_000, 0)
+	prev := base.Add(-time.Duration(recentRequestBucketSeconds) * time.Second)
+
+	quiet := &Auth{ID: "quiet"}
+	noisy := &Auth{ID: "noisy"}
+	for i := 0; i < 10; i++ { // below healthMinSamples
+		quiet.recordRecentRequest(prev, true, false)
+	}
+	for i := 0; i < 5; i++ {
+		noisy.recordRecentRequest(prev, true, false)
+		noisy.recordRecentRequest(prev, false, true) // 50% overload but only 10 samples
+	}
+
+	selector := &HealthWeightedRoundRobinSelector{nowFn: func() time.Time { return base }}
+	counts := make(map[string]int)
+	for i := 0; i < 20; i++ {
+		got, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, []*Auth{quiet, noisy})
+		if errPick != nil {
+			t.Fatalf("Pick() #%d error = %v", i, errPick)
+		}
+		counts[got.ID]++
+	}
+	if counts["quiet"] != 10 || counts["noisy"] != 10 {
+		t.Fatalf("counts = %#v, want 10/10 (both neutral)", counts)
+	}
+}
+
+func TestHealthWeightedSelectorSkipsZeroStaticWeight(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(1_700_000_000, 0)
+	zero := &Auth{ID: "zero", Attributes: map[string]string{AttributeWeight: "0"}}
+	normal := &Auth{ID: "normal"}
+
+	selector := &HealthWeightedRoundRobinSelector{nowFn: func() time.Time { return base }}
+	for i := 0; i < 10; i++ {
+		got, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, []*Auth{zero, normal})
+		if errPick != nil {
+			t.Fatalf("Pick() #%d error = %v", i, errPick)
+		}
+		if got.ID != "normal" {
+			t.Fatalf("Pick() #%d = %q, want %q", i, got.ID, "normal")
+		}
+	}
+}
+
+func TestHealthWeightedSelectorShareGuardClampsBoost(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(1_700_000_000, 0)
+	prev := base.Add(-time.Duration(recentRequestBucketSeconds) * time.Second)
+
+	hot := &Auth{ID: "hot"}
+	for i := 0; i < 400; i++ { // 80% of pool traffic, zero overload
+		hot.recordRecentRequest(prev, true, false)
+	}
+	others := make([]*Auth, 0, 4)
+	pool := []*Auth{hot}
+	for _, id := range []string{"o1", "o2", "o3", "o4"} {
+		other := &Auth{ID: id}
+		for i := 0; i < 25; i++ {
+			other.recordRecentRequest(prev, true, false)
+		}
+		others = append(others, other)
+		pool = append(pool, other)
+	}
+
+	selector := &HealthWeightedRoundRobinSelector{nowFn: func() time.Time { return base }}
+	counts := make(map[string]int)
+	for i := 0; i < 34; i++ {
+		got, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, pool)
+		if errPick != nil {
+			t.Fatalf("Pick() #%d error = %v", i, errPick)
+		}
+		counts[got.ID]++
+	}
+	// hot: tier 8 clamped to 2 (400×5 > 500×3); others keep tier 8.
+	// Weights 2 + 4×8 = 34 → hot gets 2 picks, each other 8.
+	if counts["hot"] != 2 {
+		t.Fatalf("hot picks = %d, want 2 (boost clamped)", counts["hot"])
+	}
+	for _, other := range others {
+		if counts[other.ID] != 8 {
+			t.Fatalf("%s picks = %d, want 8", other.ID, counts[other.ID])
+		}
+	}
+}
+
+func TestHealthWeightedSelectorReconvergesAfterWindowAges(t *testing.T) {
+	t.Parallel()
+
+	base := time.Unix(1_700_000_000, 0)
+	prev := base.Add(-time.Duration(recentRequestBucketSeconds) * time.Second)
+
+	immune := &Auth{ID: "immune"}
+	sick := &Auth{ID: "sick"}
+	for i := 0; i < 100; i++ {
+		immune.recordRecentRequest(prev, true, false)
+	}
+	for i := 0; i < 80; i++ {
+		sick.recordRecentRequest(prev, true, false)
+	}
+	for i := 0; i < 20; i++ {
+		sick.recordRecentRequest(prev, false, true)
+	}
+
+	current := base
+	selector := &HealthWeightedRoundRobinSelector{nowFn: func() time.Time { return current }}
+	for i := 0; i < 50; i++ {
+		if _, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, []*Auth{immune, sick}); errPick != nil {
+			t.Fatalf("warmup Pick() #%d error = %v", i, errPick)
+		}
+	}
+
+	// Advance beyond the window: all buckets age out, everyone back to neutral.
+	current = base.Add(70 * time.Minute)
+	counts := make(map[string]int)
+	for i := 0; i < 20; i++ {
+		got, errPick := selector.Pick(context.Background(), "codex", "gpt-5", cliproxyexecutor.Options{}, []*Auth{immune, sick})
+		if errPick != nil {
+			t.Fatalf("Pick() #%d error = %v", i, errPick)
+		}
+		counts[got.ID]++
+	}
+	if counts["immune"] != 10 || counts["sick"] != 10 {
+		t.Fatalf("counts = %#v, want 10/10 after window aged out", counts)
 	}
 }

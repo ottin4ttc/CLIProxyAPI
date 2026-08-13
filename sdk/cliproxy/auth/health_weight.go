@@ -1,7 +1,13 @@
 package auth
 
 import (
+	"context"
+	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 const (
@@ -72,4 +78,99 @@ func applyShareGuard(tier, total, poolTotal int64, poolSize int) int64 {
 		return healthTierNeutral
 	}
 	return tier
+}
+
+// HealthWeightedRoundRobinSelector is smooth weighted round-robin whose
+// effective weights scale each credential's static weight by a health tier
+// derived from its recent overload rate. Tiers are recomputed from completed
+// ring buckets only, so the weight vector is stable between bucket boundaries.
+type HealthWeightedRoundRobinSelector struct {
+	mu        sync.Mutex
+	states    map[string]*smoothWeightedState
+	lastTiers map[string]int64
+	maxKeys   int
+	// nowFn overrides time.Now in tests.
+	nowFn func() time.Time
+}
+
+type authHealthStat struct {
+	total    int64
+	overload int64
+}
+
+func (s *HealthWeightedRoundRobinSelector) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
+}
+
+// Pick selects the next available auth using smooth weighted round-robin
+// over health-adjusted weights (static weight × share-guarded health tier).
+func (s *HealthWeightedRoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
+	now := s.now()
+	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, now)
+	if errAvailable != nil {
+		return nil, errAvailable
+	}
+	available = preferCodexWebsocketAuths(ctx, provider, available)
+
+	stats := make(map[string]authHealthStat, len(available))
+	var poolTotal int64
+	for _, auth := range available {
+		total, overload := auth.overloadWindowStats(now)
+		stats[auth.ID] = authHealthStat{total: total, overload: overload}
+		poolTotal += total
+	}
+
+	stateModel := weightedSelectorStateModel(ctx, model)
+	key := provider + ":" + canonicalModelKey(stateModel)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.states == nil {
+		s.states = make(map[string]*smoothWeightedState)
+	}
+	if s.lastTiers == nil {
+		s.lastTiers = make(map[string]int64)
+	}
+	limit := s.maxKeys
+	if limit <= 0 {
+		limit = 4096
+	}
+	if _, ok := s.states[key]; !ok && len(s.states) >= limit {
+		s.states = make(map[string]*smoothWeightedState)
+	}
+	state := s.states[key]
+	if state == nil {
+		state = &smoothWeightedState{}
+		s.states[key] = state
+	}
+
+	weights := make(map[string]int64, len(available))
+	for _, auth := range available {
+		stat := stats[auth.ID]
+		tier := healthTier(stat.total, stat.overload)
+		guarded := applyShareGuard(tier, stat.total, poolTotal, len(available))
+		if guarded != tier {
+			log.Infof("health-weight: share guard | auth=%s window_total=%d pool_total=%d pool_size=%d tier %d->%d",
+				auth.ID, stat.total, poolTotal, len(available), tier, guarded)
+		}
+		if last := s.lastTiers[auth.ID]; last != guarded {
+			log.Infof("health-weight: tier change | auth=%s %d->%d window_total=%d window_overload=%d",
+				auth.ID, last, guarded, stat.total, stat.overload)
+			s.lastTiers[auth.ID] = guarded
+		}
+		if weight := authWeight(auth); weight > 0 {
+			weights[auth.ID] = weight * guarded
+		}
+	}
+
+	state.prepare(weights)
+	picked := pickSmoothWeightedAuth(available, state.current, func(auth *Auth) int64 { return weights[auth.ID] })
+	if picked == nil {
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available with positive weight"}
+	}
+	return picked, nil
 }
