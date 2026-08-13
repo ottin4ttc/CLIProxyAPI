@@ -174,3 +174,13 @@ func (s *HealthWeightedRoundRobinSelector) Pick(ctx context.Context, provider, m
 	}
 	return picked, nil
 }
+
+// HealthTier reports the credential's current raw health tier (×2 fixed-point:
+// 8=×4, 4=×2, 2=×1 neutral, 1=×0.5) computed from completed-window overload
+// stats. It does not apply the selector's share guard, which needs pool-wide
+// context; the routing tier can therefore be clamped to neutral while this
+// still reports a boost.
+func (a *Auth) HealthTier(now time.Time) int64 {
+	total, overload := a.overloadWindowStats(now)
+	return healthTier(total, overload)
+}

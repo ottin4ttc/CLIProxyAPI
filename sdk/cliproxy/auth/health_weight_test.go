@@ -330,3 +330,23 @@ func TestSessionAffinityWithHealthFallbackSkipsZeroWeight(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthHealthTierExported(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	prev := now.Add(-time.Duration(recentRequestBucketSeconds) * time.Second)
+
+	clean := &Auth{ID: "clean"}
+	for i := 0; i < 25; i++ {
+		clean.recordRecentRequest(prev, true, false)
+	}
+	if got := clean.HealthTier(now); got != healthTierBoostMax {
+		t.Fatalf("HealthTier(clean) = %d, want %d", got, healthTierBoostMax)
+	}
+
+	empty := &Auth{ID: "empty"}
+	if got := empty.HealthTier(now); got != healthTierNeutral {
+		t.Fatalf("HealthTier(empty) = %d, want %d", got, healthTierNeutral)
+	}
+}
