@@ -42,3 +42,34 @@ func (a *Auth) overloadWindowStats(now time.Time) (total, overload int64) {
 	}
 	return total, overload
 }
+
+// healthTier maps completed-window overload stats to a fixed-point tier.
+// Integer math only: rate ≤ N% is expressed as overload*100 <= total*N.
+func healthTier(total, overload int64) int64 {
+	if total < healthMinSamples {
+		return healthTierNeutral
+	}
+	switch {
+	case overload == 0:
+		return healthTierBoostMax
+	case overload*100 <= total*2:
+		return healthTierBoost
+	case overload*100 <= total*8:
+		return healthTierNeutral
+	default:
+		return healthTierFloor
+	}
+}
+
+// applyShareGuard withdraws a boost when the account already carries more
+// than healthShareCapMultiple × fair share of the pool's window traffic.
+// It never pushes a tier below neutral — demotion is the health signal's job.
+func applyShareGuard(tier, total, poolTotal int64, poolSize int) int64 {
+	if tier <= healthTierNeutral || poolSize <= 0 {
+		return tier
+	}
+	if total*int64(poolSize) > poolTotal*healthShareCapMultiple {
+		return healthTierNeutral
+	}
+	return tier
+}

@@ -98,3 +98,45 @@ func TestOverloadWindowStatsEmptyRing(t *testing.T) {
 		t.Fatalf("stats = total=%d overload=%d, want 0/0", total, overload)
 	}
 }
+
+func TestHealthTierBoundaries(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		total, overload int64
+		want            int64
+	}{
+		{"below min samples stays neutral", 19, 0, healthTierNeutral},
+		{"zero overload boosts max", 20, 0, healthTierBoostMax},
+		{"exactly 2 percent boosts", 100, 2, healthTierBoost},
+		{"above 2 percent is neutral", 100, 3, healthTierNeutral},
+		{"exactly 8 percent is neutral", 100, 8, healthTierNeutral},
+		{"above 8 percent hits floor", 100, 9, healthTierFloor},
+	}
+	for _, tc := range cases {
+		if got := healthTier(tc.total, tc.overload); got != tc.want {
+			t.Fatalf("%s: healthTier(%d, %d) = %d, want %d", tc.name, tc.total, tc.overload, got, tc.want)
+		}
+	}
+}
+
+func TestApplyShareGuard(t *testing.T) {
+	t.Parallel()
+
+	// Exactly 3× fair share is not clamped; above it is.
+	if got := applyShareGuard(healthTierBoostMax, 30, 100, 10); got != healthTierBoostMax {
+		t.Fatalf("at cap: tier = %d, want %d", got, healthTierBoostMax)
+	}
+	if got := applyShareGuard(healthTierBoostMax, 31, 100, 10); got != healthTierNeutral {
+		t.Fatalf("above cap: tier = %d, want %d", got, healthTierNeutral)
+	}
+	// Guard only clamps boosts, never tiers at or below neutral.
+	if got := applyShareGuard(healthTierFloor, 90, 100, 10); got != healthTierFloor {
+		t.Fatalf("floor untouched: tier = %d, want %d", got, healthTierFloor)
+	}
+	// Small pools never trigger (fair share 50%, cap 150%).
+	if got := applyShareGuard(healthTierBoostMax, 60, 100, 2); got != healthTierBoostMax {
+		t.Fatalf("small pool: tier = %d, want %d", got, healthTierBoostMax)
+	}
+}
