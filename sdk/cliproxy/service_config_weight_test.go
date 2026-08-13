@@ -75,3 +75,17 @@ func TestApplyManagerConfigStopsReplacedServiceAffinitySelector(t *testing.T) {
 		t.Fatal("expected replaced selector to be stopped during routing config apply")
 	}
 }
+
+func TestHealthWeightedRoutingSelector(t *testing.T) {
+	for _, raw := range []string{"health-weighted-round-robin", "hwrr", "HealthWeightedRoundRobin"} {
+		state := normalizedRoutingRuntimeState(&internalconfig.Config{
+			Routing: internalconfig.RoutingConfig{Strategy: raw},
+		})
+		if state.strategy != "health-weighted-round-robin" {
+			t.Fatalf("strategy(%q) = %q, want health-weighted-round-robin", raw, state.strategy)
+		}
+		if _, ok := newRoutingSelector(state).(*coreauth.HealthWeightedRoundRobinSelector); !ok {
+			t.Fatalf("selector type(%q) = %T, want *auth.HealthWeightedRoundRobinSelector", raw, newRoutingSelector(state))
+		}
+	}
+}
