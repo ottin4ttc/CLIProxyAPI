@@ -45,7 +45,7 @@ type smoothWeightedState struct {
 type weightedSelectorStateModelKey struct{}
 
 func withWeightedSelectorStateModel(ctx context.Context, selector Selector, routeModel string) context.Context {
-	if _, ok := selector.(*WeightedRoundRobinSelector); !ok || strings.TrimSpace(routeModel) == "" {
+	if !isWeightAwareSelector(selector) || strings.TrimSpace(routeModel) == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, weightedSelectorStateModelKey{}, routeModel)
@@ -181,6 +181,17 @@ func authWeight(auth *Auth) int64 {
 		return weight
 	}
 	return credentialweight.Default
+}
+
+// isWeightAwareSelector reports whether a selector excludes non-positive
+// static weights and keys smooth weighted state by route model.
+func isWeightAwareSelector(selector Selector) bool {
+	switch selector.(type) {
+	case *WeightedRoundRobinSelector, *HealthWeightedRoundRobinSelector:
+		return true
+	default:
+		return false
+	}
 }
 
 func canonicalModelKey(model string) string {
@@ -703,7 +714,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
 	now := time.Now()
 	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
+	if isWeightAwareSelector(s.fallback) {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}
 	if primaryID == "" {

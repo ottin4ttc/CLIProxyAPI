@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -305,5 +306,27 @@ func TestHealthWeightedSelectorReconvergesAfterWindowAges(t *testing.T) {
 	}
 	if counts["immune"] != 10 || counts["sick"] != 10 {
 		t.Fatalf("counts = %#v, want 10/10 after window aged out", counts)
+	}
+}
+
+func TestSessionAffinityWithHealthFallbackSkipsZeroWeight(t *testing.T) {
+	t.Parallel()
+
+	fallback := &HealthWeightedRoundRobinSelector{}
+	selector := NewSessionAffinitySelector(fallback)
+	defer selector.Stop()
+
+	zero := &Auth{ID: "zero", Attributes: map[string]string{AttributeWeight: "0"}}
+	normal := &Auth{ID: "normal"}
+	opts := cliproxyexecutor.Options{Headers: http.Header{"X-Session-Id": []string{"session-1"}}}
+
+	for i := 0; i < 2; i++ {
+		got, errPick := selector.Pick(context.Background(), "codex", "gpt-5", opts, []*Auth{zero, normal})
+		if errPick != nil {
+			t.Fatalf("Pick() #%d error = %v", i, errPick)
+		}
+		if got.ID != "normal" {
+			t.Fatalf("Pick() #%d = %q, want %q", i, got.ID, "normal")
+		}
 	}
 }
