@@ -415,7 +415,7 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 	if !errors.As(err, &cooldownErr) || cooldownErr == nil || cooldownErr.model != "" {
 		return err
 	}
-	return newModelCooldownError(requestedModel, cooldownErr.provider, cooldownErr.resetIn)
+	return newModelCooldownError(requestedModel, cooldownErr.provider, cooldownErr.resetIn, cooldownErr.reason)
 }
 
 func schedulerAttributeSensitive(key string) bool {

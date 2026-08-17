@@ -736,10 +736,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				// Retain active credential-scoped cooldown
 			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
-				if cooldownWindowActive(state, now) {
-					// A success completing inside an open cooldown window comes
+				if overloadCooldownWindowActive(state, now) {
+					// A success completing inside an open overload window comes
 					// from a request admitted before the window was armed; it
-					// says nothing about the credential's health now. Cooldown
+					// says nothing about the credential's health now. Overload
 					// windows are only ever extended, never shortened.
 					log.Debugf("cooldown: success inside open window kept | auth=%s model=%s until=%s",
 						auth.ID, modelKey, cooldownWindowDeadline(state).Format(time.RFC3339))
@@ -1139,12 +1139,28 @@ func mergeModelState(target, source *ModelState) *ModelState {
 }
 
 // cooldownWindowActive reports whether the model state still holds an
-// unexpired cooldown window.
+// unexpired cooldown window, whatever armed it.
 func cooldownWindowActive(state *ModelState, now time.Time) bool {
 	if state == nil {
 		return false
 	}
 	return state.NextRetryAfter.After(now) || state.Quota.NextRecoverAt.After(now)
+}
+
+// overloadCooldownWindowActive reports whether the model state holds an
+// unexpired window that an overload armed.
+//
+// Only overload windows are protected from in-flight successes. An overload
+// window comes from our own backoff ladder and says nothing about a single
+// request's outcome, so a success completing inside one is stale evidence from
+// a request admitted before the window opened. A quota window instead carries
+// the upstream's authoritative resets_at, and a success there proves the quota
+// recovered, so it keeps the historical "success clears the window" behaviour.
+func overloadCooldownWindowActive(state *ModelState, now time.Time) bool {
+	if state == nil || strings.TrimSpace(state.Quota.Reason) != FailureCauseOverload {
+		return false
+	}
+	return cooldownWindowActive(state, now)
 }
 
 // cooldownWindowDeadline returns the later of the state's two recovery

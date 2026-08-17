@@ -219,34 +219,30 @@ func TestFileCooldownStateStore_ConcurrentSave(t *testing.T) {
 }
 
 func TestManager_MarkResult_PersistsCooldownOnlyWhenStateChanges(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
 	store := &recordingCooldownStateStore{}
 	manager := NewManager(nil, nil, nil)
 	manager.SetCooldownStateStore(store)
 
-	auth := &Auth{ID: "auth-1", Provider: "xai", Status: StatusActive}
+	auth := &Auth{ID: "auth-1", Provider: "codex", Status: StatusActive}
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
 		t.Fatalf("Register() returned error: %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
 	if got := store.saveCount.Load(); got != 0 {
 		t.Fatalf("healthy success saved cooldown state %d times, want 0", got)
 	}
 
-	manager.MarkResult(context.Background(), Result{
-		AuthID:   auth.ID,
-		Provider: "xai",
-		Model:    "grok-4",
-		Success:  false,
-		Error:    &Error{Message: "upstream unavailable", HTTPStatus: 500},
-	})
+	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("cooldown failure saved cooldown state %d times, want 1", got)
 	}
 
-	// A success inside the open window keeps the cooldown untouched and must
-	// not rewrite the persisted state.
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	// A success inside the open overload window keeps the cooldown untouched
+	// and must not rewrite the persisted state.
+	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("in-window success saved cooldown state %d times, want 1", got)
 	}
@@ -255,21 +251,23 @@ func TestManager_MarkResult_PersistsCooldownOnlyWhenStateChanges(t *testing.T) {
 	// record already lapsed with the deadline, so nothing new is saved.
 	expired := time.Now().Add(-time.Second)
 	manager.mu.Lock()
-	if state := manager.auths[auth.ID].ModelStates["grok-4"]; state != nil {
+	if state := manager.auths[auth.ID].ModelStates["gpt-5"]; state != nil {
 		state.NextRetryAfter = expired
+		state.Quota.NextRecoverAt = expired
 	}
 	manager.auths[auth.ID].NextRetryAfter = expired
+	manager.auths[auth.ID].Quota.NextRecoverAt = expired
 	manager.mu.Unlock()
 
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("post-expiry success saved cooldown state %d times, want 1", got)
 	}
-	if updated, ok := manager.GetByID(auth.ID); !ok || updated.ModelStates["grok-4"] == nil || updated.ModelStates["grok-4"].Unavailable {
+	if updated, ok := manager.GetByID(auth.ID); !ok || updated.ModelStates["gpt-5"] == nil || updated.ModelStates["gpt-5"].Unavailable {
 		t.Fatal("expected post-expiry success to clear the model state")
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("clean success saved cooldown state %d times, want 1", got)
 	}
