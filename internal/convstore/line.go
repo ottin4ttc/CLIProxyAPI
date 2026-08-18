@@ -4,7 +4,10 @@ import "encoding/json"
 
 // Line is one recorded request turn — exactly one JSONL line.
 type Line struct {
-	TS             int64           `json:"ts"`
+	TS int64 `json:"ts"`
+	// TraceID is the CPA request ID that appears in the access log and in the
+	// usage records, so a stored turn can be joined against them directly.
+	TraceID        string          `json:"trace_id,omitempty"`
 	Model          string          `json:"model,omitempty"`
 	RequestedModel string          `json:"requested_model,omitempty"`
 	Stream         bool            `json:"stream"`

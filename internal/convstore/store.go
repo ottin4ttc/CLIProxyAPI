@@ -32,6 +32,14 @@ type pending struct {
 // alone would drop it.
 const streamEndGrace = 3 * time.Second
 
+// Error codes for turns that end as "error" without ever reaching a
+// completion hook. They separate bookkeeping outcomes from real upstream
+// failures, which carry the upstream error code instead.
+const (
+	errCodeStaleOverwritten  = "stale_overwritten"
+	errCodeExpiredNoResponse = "expired_no_response"
+)
+
 // Store correlates interceptor callbacks into JSONL lines. All exported
 // methods are safe for concurrent use and never block on disk I/O.
 type Store struct {
@@ -118,6 +126,7 @@ func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
 		stream:     req.Stream,
 		line: Line{
 			TS:             nowTS.UnixMilli(),
+			TraceID:        req.TraceID,
 			Model:          req.Model,
 			RequestedModel: req.RequestedModel,
 			Stream:         req.Stream,
@@ -131,6 +140,10 @@ func (s *Store) OnRequestBefore(req pluginapi.RequestInterceptRequest) {
 	s.pendings[id] = p
 	s.mu.Unlock()
 	if stale != nil {
+		// The pending was replaced by a newer request carrying the same ID, so
+		// it never reached a completion hook. Mark why, to keep it apart from
+		// turns that failed upstream.
+		stale.line.ErrorCode = errCodeStaleOverwritten
 		s.finalize(stale, "error")
 	}
 }
@@ -278,6 +291,7 @@ func (s *Store) ExpireIdle() {
 			out = append(out, expired{p, "truncated"})
 			delete(s.pendings, id)
 		case !p.stream && nowTS.Sub(p.createdAt) > errorExpiry:
+			p.line.ErrorCode = errCodeExpiredNoResponse
 			out = append(out, expired{p, "error"})
 			delete(s.pendings, id)
 		}
