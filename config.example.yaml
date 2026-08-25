@@ -194,6 +194,12 @@ disable-cooling: false
 # Default is false; when false, cooldown status is kept in memory only.
 save-cooldown-status: false
 
+# When true, persist the recent-request health ring as a recent-requests.<port>.state
+# file next to auth files and restore it on startup, so health-weighted routing keeps
+# its tier data across short restarts (deploys). Read once at startup only: toggling
+# it on a running process has no effect until restart. Default is false.
+save-health-ring: false
+
 # Cooldown duration in seconds for transient upstream errors (408/500/502/503/504).
 # Set to 0 to keep the legacy 60-second cooldown; set to -1 to disable transient error cooldowns.
 transient-error-cooldown-seconds: 0

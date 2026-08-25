@@ -68,6 +68,10 @@ type Config struct {
 	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
 	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
 
+	// SaveHealthRing persists the recent-request health ring next to auth files when true.
+	// Read once at startup; toggling it on a running process has no effect until restart.
+	SaveHealthRing bool `yaml:"save-health-ring" json:"save-health-ring"`
+
 	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
 	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
 	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`

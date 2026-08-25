@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,6 +264,71 @@ func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
 	}
 
 	return out
+}
+
+// PersistedRequestBucket is one persisted ring bucket keyed by its absolute bucket id.
+type PersistedRequestBucket struct {
+	BucketID int64 `json:"bucket_id"`
+	Success  int64 `json:"success"`
+	Failed   int64 `json:"failed"`
+	Overload int64 `json:"overload"`
+}
+
+// AuthRecentRequests is the persisted recent-request ring of one auth entry.
+type AuthRecentRequests struct {
+	ID      string                   `json:"id"`
+	Buckets []PersistedRequestBucket `json:"buckets"`
+}
+
+// exportRecentRequests returns the non-empty ring buckets with their absolute
+// ids, sorted ascending for deterministic output.
+func (a *Auth) exportRecentRequests() []PersistedRequestBucket {
+	if a == nil {
+		return nil
+	}
+	out := make([]PersistedRequestBucket, 0, recentRequestBucketCount)
+	for i := range a.recentRequests.buckets {
+		bucket := a.recentRequests.buckets[i]
+		if bucket.bucketID == 0 {
+			continue
+		}
+		out = append(out, PersistedRequestBucket{
+			BucketID: bucket.bucketID,
+			Success:  bucket.success,
+			Failed:   bucket.failed,
+			Overload: bucket.overload,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BucketID < out[j].BucketID })
+	return out
+}
+
+// importRecentRequests restores persisted buckets into the ring. A bucket is
+// kept only when it still falls inside the live window
+// (currentBucketID - recentRequestBucketCount < id <= currentBucketID), so no
+// bucket can alias onto another id's slot. A ring slot that already holds data
+// is never overwritten. It returns the number of buckets restored.
+func (a *Auth) importRecentRequests(now time.Time, buckets []PersistedRequestBucket) int {
+	if a == nil || len(buckets) == 0 {
+		return 0
+	}
+	currentBucketID := recentRequestBucketID(now)
+	restored := 0
+	for _, bucket := range buckets {
+		if bucket.BucketID <= currentBucketID-int64(recentRequestBucketCount) || bucket.BucketID > currentBucketID {
+			continue
+		}
+		slot := &a.recentRequests.buckets[recentRequestBucketIndex(bucket.BucketID)]
+		if slot.bucketID != 0 {
+			continue
+		}
+		slot.bucketID = bucket.BucketID
+		slot.success = bucket.Success
+		slot.failed = bucket.Failed
+		slot.overload = bucket.Overload
+		restored++
+	}
+	return restored
 }
 
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.

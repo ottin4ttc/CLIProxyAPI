@@ -84,6 +84,18 @@ func (s *Service) Run(ctx context.Context) error {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
 			}
 		}
+		if s.cfg.SaveHealthRing {
+			// Startup only by design: not wired into the hot config reload path.
+			if authDir, errAuthDir := resolveCooldownStateAuthDir(s.cfg); errAuthDir != nil {
+				log.Warnf("failed to resolve health ring directory: %v", errAuthDir)
+			} else if authDir != "" {
+				s.coreManager.SetHealthRingStore(coreauth.NewFileHealthRingStore(authDir, s.cfg.Port))
+				if errRestoreRing := s.coreManager.RestoreHealthRings(ctx); errRestoreRing != nil {
+					log.Warnf("failed to restore health ring: %v", errRestoreRing)
+				}
+				s.coreManager.StartHealthRingPersister(context.Background())
+			}
+		}
 	}
 
 	if !homeEnabled {
@@ -286,6 +298,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.watcherCancel()
 		}
 		if s.coreManager != nil {
+			s.coreManager.StopHealthRingPersister()
 			s.coreManager.StopAutoRefresh()
 		}
 		if s.watcher != nil {
