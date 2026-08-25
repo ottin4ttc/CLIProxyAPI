@@ -385,7 +385,9 @@ func (l *FileRequestLogger) cleanupOldErrorLogs() error {
 	})
 
 	for _, file := range files[l.errorLogsMaxFiles:] {
-		if errRemove := os.Remove(filepath.Join(l.logsDir, file.name)); errRemove != nil {
+		// Concurrent cleanups can target the same file; a missing file means
+		// another goroutine already removed it, which is not a failure.
+		if errRemove := os.Remove(filepath.Join(l.logsDir, file.name)); errRemove != nil && !os.IsNotExist(errRemove) {
 			log.WithError(errRemove).Warnf("failed to remove old error log: %s", file.name)
 		}
 	}
