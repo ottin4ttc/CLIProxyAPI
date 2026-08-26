@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -213,28 +216,31 @@ func TestCodexFallbackEligible(t *testing.T) {
 func TestShouldRetryAfterErrorStopsRotatingOnOverload(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	manager.SetRetryConfig(3, 30*time.Second, 0)
-	// shouldRetryAfterError's status-429 branch gates on retryAllowed, which
-	// only permits a retry when a matching provider auth is registered (see
-	// TestManager_ShouldRetryAfterError_SkipsWrappedHomeConcurrencyBusy for the
-	// same pattern). Register one so the assertions below exercise the new
+	// shouldRetryAfterError gates on retryAllowed, which only permits a retry
+	// when a registered auth for the provider serves the route model (see
+	// TestManager_ShouldRetryAfterError_RetriesLocalRoundWithoutCooldown for the
+	// same pattern). Register one so the assertions below exercise the
 	// fallback-cap logic instead of failing on that unrelated precondition.
+	model := "overload-rotation-" + uuid.NewString()
+	registry.GetGlobalRegistry().RegisterClient("overload-auth", "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("overload-auth") })
 	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "overload-auth", Provider: "codex"}); errRegister != nil {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 
 	overloadErr := causeCarryingError{cause: FailureCauseOverload}
-	if _, retry := manager.shouldRetryAfterError(overloadErr, 0, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, true); !retry {
+	if _, retry := manager.shouldRetryAfterError(overloadErr, 0, []string{"codex"}, model, 30*time.Second, true); !retry {
 		t.Fatal("attempt 0 on overload should still rotate once")
 	}
-	if _, retry := manager.shouldRetryAfterError(overloadErr, 1, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, true); retry {
+	if _, retry := manager.shouldRetryAfterError(overloadErr, 1, []string{"codex"}, model, 30*time.Second, true); retry {
 		t.Fatal("attempt 1 on overload must not rotate again when the request can fall back")
 	}
-	if _, retry := manager.shouldRetryAfterError(overloadErr, 1, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, false); !retry {
+	if _, retry := manager.shouldRetryAfterError(overloadErr, 1, []string{"codex"}, model, 30*time.Second, false); !retry {
 		t.Fatal("a request that cannot fall back must keep rotating, exactly as before this change")
 	}
 
 	quotaErr := causeCarryingError{cause: FailureCauseQuota}
-	if _, retry := manager.shouldRetryAfterError(quotaErr, 1, []string{"codex"}, "gpt-5.6-sol", 30*time.Second, true); !retry {
+	if _, retry := manager.shouldRetryAfterError(quotaErr, 1, []string{"codex"}, model, 30*time.Second, true); !retry {
 		t.Fatal("quota errors must keep rotating at attempt 1")
 	}
 }

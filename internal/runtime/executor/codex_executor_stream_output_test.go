@@ -576,6 +576,13 @@ func TestCodexTerminalFailureErrClassifiesStatus(t *testing.T) {
 			event:      `{"type":"response.failed","response":{"error":{"type":"upstream_error","code":"unknown","message":"Upstream failed."}}}`,
 			wantStatus: http.StatusBadGateway,
 		},
+		// This fork maps in-band overload rejections to a retryable 429 (see newCodexStatusErr)
+		// regardless of bootstrap buffering, so the overload cooldown ladder applies uniformly.
+		{
+			name:       "overload maps to a retryable 429",
+			event:      `{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`,
+			wantStatus: http.StatusTooManyRequests,
+		},
 	}
 
 	for _, tc := range tests {

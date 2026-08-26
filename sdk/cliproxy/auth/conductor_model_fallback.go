@@ -187,13 +187,16 @@ func codexFallbackExhaustedLogEntry(ctx context.Context, model string, chain []s
 // credential per tier. ok is false when no tier succeeded.
 func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
 	chain := m.codexFallbackChain(model)
+	defaultRequestRetry, _, _ := m.retrySettings()
 	for _, tier := range chain {
 		if ctx.Err() != nil {
 			return cliproxyexecutor.Response{}, false, nil
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		// Each tier is a fresh round 0 on one credential; the caller already
+		// exhausted rotation on the original model.
+		resp, errExec := m.executeMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1, 0, defaultRequestRetry)
 		if errExec == nil {
 			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the request")
 			return resp, true, nil
@@ -211,13 +214,14 @@ func (m *Manager) tryCodexModelFallback(ctx context.Context, providers []string,
 // still returns a token count rather than a completion payload.
 func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (cliproxyexecutor.Response, bool, error) {
 	chain := m.codexFallbackChain(model)
+	defaultRequestRetry, _, _ := m.retrySettings()
 	for _, tier := range chain {
 		if ctx.Err() != nil {
 			return cliproxyexecutor.Response{}, false, nil
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		resp, errExec := m.executeCountMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1, 0, defaultRequestRetry)
 		if errExec == nil {
 			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the count_tokens request")
 			return resp, true, nil
@@ -234,13 +238,15 @@ func (m *Manager) tryCodexModelFallbackCount(ctx context.Context, providers []st
 // tryCodexModelFallback. It only runs before any bytes reach the client.
 func (m *Manager) tryCodexModelFallbackStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, model string) (*cliproxyexecutor.StreamResult, bool, error) {
 	chain := m.codexFallbackChain(model)
+	defaultRequestRetry, _, _ := m.retrySettings()
+	homeRetryLimit := -1
 	for _, tier := range chain {
 		if ctx.Err() != nil {
 			return nil, false, nil
 		}
 		fallbackReq := req
 		fallbackReq.Model = tier
-		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1)
+		result, errStream := m.executeStreamMixedOnce(withCodexModelFallback(ctx), providers, fallbackReq, opts, 1, &homeRetryLimit, 0, defaultRequestRetry)
 		if errStream == nil {
 			codexFallbackLogEntry(ctx, opts, model, tier).Warn("codex model fallback served the stream")
 			return result, true, nil
