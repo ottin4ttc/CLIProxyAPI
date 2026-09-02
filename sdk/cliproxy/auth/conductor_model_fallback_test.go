@@ -327,7 +327,7 @@ func TestShouldAttemptCodexModelFallbackCooldownOverload(t *testing.T) {
 		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
 		"gpt-5.6-sol", "gpt-5.6-terra")
 
-	cooldownErr := newModelCooldownError("gpt-5.6-sol", "codex", time.Minute, FailureCauseOverload)
+	cooldownErr := newModelCooldownErrorFull("gpt-5.6-sol", "codex", time.Minute, FailureCauseOverload, nil)
 	if !manager.shouldAttemptCodexModelFallback(context.Background(), cooldownErr, []string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
 		t.Fatal("an all-credentials-cooling overload must be eligible for fallback")
 	}
@@ -342,7 +342,7 @@ func TestShouldAttemptCodexModelFallbackCooldownQuota(t *testing.T) {
 		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
 		"gpt-5.6-sol", "gpt-5.6-terra")
 
-	cooldownErr := newModelCooldownError("gpt-5.6-sol", "codex", time.Minute, FailureCauseQuota)
+	cooldownErr := newModelCooldownErrorFull("gpt-5.6-sol", "codex", time.Minute, FailureCauseQuota, nil)
 	if manager.shouldAttemptCodexModelFallback(context.Background(), cooldownErr, []string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
 		t.Fatal("an all-credentials-cooling quota exhaustion must not be eligible for fallback")
 	}

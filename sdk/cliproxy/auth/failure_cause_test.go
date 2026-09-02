@@ -79,7 +79,7 @@ func TestCooldownReasonForModel(t *testing.T) {
 }
 
 func TestModelCooldownErrorCarriesReason(t *testing.T) {
-	err := newModelCooldownError("gpt-5.6-sol", "codex", time.Minute, FailureCauseOverload)
+	err := newModelCooldownErrorFull("gpt-5.6-sol", "codex", time.Minute, FailureCauseOverload, nil)
 	if err.reason != FailureCauseOverload {
 		t.Fatalf("reason = %q, want %q", err.reason, FailureCauseOverload)
 	}
