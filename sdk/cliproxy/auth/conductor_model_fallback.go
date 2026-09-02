@@ -133,12 +133,17 @@ func (m *Manager) shouldAttemptCodexModelFallback(ctx context.Context, lastErr e
 	if !m.codexFallbackEligible(providers, model, opts) {
 		return false
 	}
-	if failureCauseFromError(lastErr) == FailureCauseOverload {
-		return true
-	}
+	// A model-cooldown error carries its own agreed reason, which is empty when
+	// the candidates disagree. It must be consulted first: modelCooldownError
+	// unwraps to the latest candidate's error, so failureCauseFromError would
+	// report that one candidate's cause and degrade on a mixed set where only
+	// the most recent credential hit an overload.
 	var cooldownErr *modelCooldownError
 	if errors.As(lastErr, &cooldownErr) && cooldownErr != nil {
 		return cooldownErr.reason == FailureCauseOverload
+	}
+	if failureCauseFromError(lastErr) == FailureCauseOverload {
+		return true
 	}
 	return false
 }

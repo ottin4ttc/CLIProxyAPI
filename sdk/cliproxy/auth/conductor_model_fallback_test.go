@@ -348,6 +348,32 @@ func TestShouldAttemptCodexModelFallbackCooldownQuota(t *testing.T) {
 	}
 }
 
+// TestShouldAttemptCodexModelFallbackMixedCooldownWithOverloadCause pins the
+// all-credentials-agree semantics against the unwrap path. A modelCooldownError
+// built from a mixed candidate set carries an empty reason but still exposes the
+// latest candidate's error as its cause, and errors.As walks Unwrap. Consulting
+// failureCauseFromError first would therefore read that single candidate's
+// overload and degrade a set where other credentials are quota-exhausted, for
+// which a lower tier is no remedy.
+func TestShouldAttemptCodexModelFallbackMixedCooldownWithOverloadCause(t *testing.T) {
+	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
+	manager := newFallbackManager(t, "codex-fb-mixed", executor,
+		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
+		"gpt-5.6-sol", "gpt-5.6-terra")
+
+	latestCandidateErr := &Error{Code: "rate_limit", Message: "overloaded", Cause: FailureCauseOverload}
+	mixed := newModelCooldownErrorFull("gpt-5.6-sol", "codex", time.Minute, "", latestCandidateErr)
+
+	if manager.shouldAttemptCodexModelFallback(context.Background(), mixed, []string{"codex"}, "gpt-5.6-sol", cliproxyexecutor.Options{}) {
+		t.Fatal("a mixed cooldown set must not degrade just because the latest candidate overloaded")
+	}
+
+	// The cause must still be reachable for diagnostics.
+	if !errors.Is(errors.Unwrap(mixed), latestCandidateErr) {
+		t.Fatal("cooldown error must still expose its cause")
+	}
+}
+
 // TestCodexFallbackEligibleDeclinesUnderHomeMode pins the Home gate to
 // codexFallbackEligible rather than to the fallback decision alone.
 // codexFallbackEligible gates both halves of the feature: the rotation cap in

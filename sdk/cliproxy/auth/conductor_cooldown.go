@@ -668,7 +668,8 @@ func cooldownErrorEqual(a, b *Error) bool {
 	return a.Code == b.Code &&
 		a.Message == b.Message &&
 		a.Retryable == b.Retryable &&
-		a.HTTPStatus == b.HTTPStatus
+		a.HTTPStatus == b.HTTPStatus &&
+		a.Cause == b.Cause
 }
 
 func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bool) {
