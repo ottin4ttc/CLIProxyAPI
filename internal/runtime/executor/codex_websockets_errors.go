@@ -58,7 +58,7 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 	// an all-credentials-cooling model is overloaded (degradable) or quota
 	// exhausted (not). An empty cause there silently disables the model fallback
 	// in any deployment mixing websocket and HTTP clients.
-	statusError := statusErr{code: status, msg: string(out), cause: codexFailureCause(out)}
+	statusError := statusErr{code: status, msg: string(out), cause: codexFailureCause(out), credentialScoped: isCodexUsageLimitError(out)}
 	// Overload/capacity 429s deliberately carry no retryAfter: the auth layer
 	// routes cause "overload" onto its own escalating cooldown ladder, and a
 	// hint here would bypass it.
