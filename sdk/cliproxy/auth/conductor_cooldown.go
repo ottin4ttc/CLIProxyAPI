@@ -865,12 +865,20 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if result.Error != nil && strings.TrimSpace(result.Error.Cause) == FailureCauseOverload {
 								cause = FailureCauseOverload
 							}
+							if cause == FailureCauseOverload {
+								// Upstream overload is a per-credential, memoryless signal:
+								// it is already in the health ring and demotes the routing
+								// weight, but it never arms a cooldown window. Only a
+								// still-live window from another cause keeps the model blocked.
+								state.Unavailable = keepOverloadedInRotation(&state.Quota, state.NextRetryAfter, now)
+								break
+							}
 							if !disableCooling {
 								windowOpen := state.Quota.NextRecoverAt.After(now)
 								// A quota RetryAfter is the upstream's authoritative
 								// resets_at and always rewrites the window; everything
 								// else reuses an open window untouched.
-								reuse := windowOpen && (cause == FailureCauseOverload || result.RetryAfter == nil)
+								reuse := windowOpen && result.RetryAfter == nil
 								if !reuse {
 									// The ladders must not cross-contaminate: when a
 									// fresh window opens for a different cause than
@@ -881,13 +889,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									reason = cause
 								}
 								seeded := QuotaState{NextRecoverAt: state.Quota.NextRecoverAt, BackoffLevel: backoffLevel}
-								// Overload takes the 5..30 minute ladder even when
-								// the error carries a RetryAfter hint; RetryAfter
-								// stays authoritative only for quota, where it is
-								// the upstream's resets_at.
-								if cause == FailureCauseOverload {
-									next, backoffLevel = overloadCooldownAfterFailure(seeded, now)
-								} else if result.RetryAfter != nil {
+								if result.RetryAfter != nil {
 									cooldown := *result.RetryAfter
 									if cooldown < minQuotaCooldownFloor {
 										cooldown = minQuotaCooldownFloor
@@ -1214,12 +1216,14 @@ func cooldownWindowActive(state *ModelState, now time.Time) bool {
 }
 
 // overloadCooldownWindowActive reports whether the model state holds an
-// unexpired window that an overload armed.
+// unexpired window carrying the overload reason. Overload no longer arms
+// windows, so such a window can only be restored from persisted cooldown state
+// written by an earlier build; it is honoured until it expires.
 //
 // Only overload windows are protected from in-flight successes. An overload
-// window comes from our own backoff ladder and says nothing about a single
-// request's outcome, so a success completing inside one is stale evidence from
-// a request admitted before the window opened. A quota window instead carries
+// window says nothing about a single request's outcome, so a success
+// completing inside one is stale evidence from a request admitted before the
+// window opened. A quota window instead carries
 // the upstream's authoritative resets_at, and a success there proves the quota
 // recovered, so it keeps the historical "success clears the window" behaviour.
 func overloadCooldownWindowActive(state *ModelState, now time.Time) bool {
@@ -1227,6 +1231,20 @@ func overloadCooldownWindowActive(state *ModelState, now time.Time) bool {
 		return false
 	}
 	return cooldownWindowActive(state, now)
+}
+
+// keepOverloadedInRotation records an overload without taking the credential
+// out of rotation: an expired quota window is cleared so it cannot linger as a
+// stale block, and the returned availability flag reflects only cooldowns from
+// other causes that are still live.
+func keepOverloadedInRotation(quota *QuotaState, nextRetryAfter time.Time, now time.Time) bool {
+	if quota == nil {
+		return nextRetryAfter.After(now)
+	}
+	if !quota.NextRecoverAt.After(now) {
+		applyCooldownFields(quota, QuotaState{})
+	}
+	return nextRetryAfter.After(now) || (quota.Exceeded && quota.NextRecoverAt.After(now))
 }
 
 // cooldownWindowDeadline returns the later of the state's two recovery
@@ -2208,23 +2226,23 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			}
 			if cause == FailureCauseOverload {
 				auth.StatusMessage = "server overloaded"
-			} else {
-				auth.StatusMessage = "quota exhausted"
+				// See the per-model branch: overload never arms a cooldown window.
+				auth.Unavailable = keepOverloadedInRotation(&auth.Quota, auth.NextRetryAfter, now)
+				break
 			}
+			auth.StatusMessage = "quota exhausted"
 			auth.Quota.Exceeded = true
 			var next time.Time
 			if !disableCooling {
 				windowOpen := auth.Quota.NextRecoverAt.After(now)
-				reuse := windowOpen && (cause == FailureCauseOverload || retryAfter == nil)
+				reuse := windowOpen && retryAfter == nil
 				if !reuse {
 					if reason := strings.TrimSpace(auth.Quota.Reason); reason != "" && reason != cause {
 						auth.Quota.BackoffLevel = 0
 					}
 					auth.Quota.Reason = cause
 				}
-				if cause == FailureCauseOverload {
-					next, auth.Quota.BackoffLevel = overloadCooldownAfterFailure(auth.Quota, now)
-				} else if retryAfter != nil {
+				if retryAfter != nil {
 					cooldown := *retryAfter
 					if cooldown < minQuotaCooldownFloor {
 						cooldown = minQuotaCooldownFloor
@@ -2279,39 +2297,6 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int)
 		next = now.Add(cooldown).Round(0)
 	}
 	return next, nextLevel
-}
-
-// overloadCooldownAfterFailure returns the recovery deadline and backoff level
-// for an overload failure observed at now. Failures that land while a previous
-// window is still open reuse that window instead of escalating, so a burst of
-// concurrent in-flight failures advances the backoff ladder at most once per
-// window and a cooldown is only ever extended, never shortened.
-func overloadCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
-	if quota.NextRecoverAt.After(now) {
-		return quota.NextRecoverAt, quota.BackoffLevel
-	}
-	cooldown, nextLevel := nextOverloadCooldown(quota.BackoffLevel)
-	var next time.Time
-	if cooldown > 0 {
-		next = now.Add(cooldown)
-	}
-	return next, nextLevel
-}
-
-// nextOverloadCooldown returns the next cooldown duration and updated backoff
-// level for repeated overload errors: 5 -> 10 -> 20 -> 30 minutes (ceiling).
-func nextOverloadCooldown(prevLevel int) (time.Duration, int) {
-	if prevLevel < 0 {
-		prevLevel = 0
-	}
-	cooldown := overloadBackoffBase * time.Duration(1<<prevLevel)
-	if cooldown < overloadBackoffBase {
-		cooldown = overloadBackoffBase
-	}
-	if cooldown >= overloadBackoffMax {
-		return overloadBackoffMax, prevLevel
-	}
-	return cooldown, prevLevel + 1
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.

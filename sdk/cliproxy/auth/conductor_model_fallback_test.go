@@ -559,7 +559,11 @@ func TestFallbackTriesExactlyOneCredentialPerTier(t *testing.T) {
 // second request short-circuits in selection with a modelCooldownError and
 // never reaches the executor for the primary model. That second request is the
 // one production returned as a bare 429 model_cooldown.
-func TestExecuteFallsBackWhenEveryCredentialIsAlreadyCooling(t *testing.T) {
+// TestExecuteProbesPrimaryAgainAfterOverload pins the no-cooldown overload
+// policy end to end: an overloaded credential stays in rotation, so the next
+// request for the primary model probes it again and only degrades once that
+// probe is shed too. Selection must not short-circuit on the recorded cause.
+func TestExecuteProbesPrimaryAgainAfterOverload(t *testing.T) {
 	executor := &codexTierExecutor{primary: "gpt-5.6-sol", cause: FailureCauseOverload}
 	manager := newFallbackManager(t, "codex-fb-17", executor,
 		[]internalconfig.CodexModelFallback{{From: "gpt-5.6-sol", To: []string{"gpt-5.6-terra"}}},
@@ -567,7 +571,7 @@ func TestExecuteFallsBackWhenEveryCredentialIsAlreadyCooling(t *testing.T) {
 
 	firstResp, errFirst := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
 	if errFirst != nil {
-		t.Fatalf("first execute (状态 A): %v", errFirst)
+		t.Fatalf("first execute: %v", errFirst)
 	}
 	if got := responseModel(t, firstResp.Payload); got != "gpt-5.6-terra" {
 		t.Fatalf("first response model = %q, want gpt-5.6-terra", got)
@@ -577,16 +581,14 @@ func TestExecuteFallsBackWhenEveryCredentialIsAlreadyCooling(t *testing.T) {
 
 	secondResp, errSecond := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
 	if errSecond != nil {
-		t.Fatalf("second execute (状态 B, every credential already cooling on overload): %v", errSecond)
+		t.Fatalf("second execute (credential overloaded moments ago): %v", errSecond)
 	}
 	if got := responseModel(t, secondResp.Payload); got != "gpt-5.6-terra" {
 		t.Fatalf("second response model = %q, want gpt-5.6-terra", got)
 	}
 
-	// Selection short-circuited, so the primary model must not have reached the
-	// executor again: the degrade decision rests purely on the recorded cause.
-	if got := countModelAttempts(executor.seen[attemptsAfterFirst:], "gpt-5.6-sol"); got != 0 {
-		t.Fatalf("primary model attempts on the second request = %d, want 0 (selection must short-circuit); seen=%v", got, executor.seen)
+	if got := countModelAttempts(executor.seen[attemptsAfterFirst:], "gpt-5.6-sol"); got != 1 {
+		t.Fatalf("primary model attempts on the second request = %d, want 1 (an overloaded credential stays in rotation); seen=%v", got, executor.seen)
 	}
 }
 

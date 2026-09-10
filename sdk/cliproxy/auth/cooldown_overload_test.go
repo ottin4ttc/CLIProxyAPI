@@ -13,13 +13,17 @@ func overloadResult(authID, model string) Result {
 		Provider: "codex",
 		Model:    model,
 		Success:  false,
-		Error: &Error{
-			Code:       "rate_limit",
-			Message:    "Our servers are currently overloaded. Please try again later.",
-			Retryable:  true,
-			HTTPStatus: http.StatusTooManyRequests,
-			Cause:      FailureCauseOverload,
-		},
+		Error:    overloadError(),
+	}
+}
+
+func overloadError() *Error {
+	return &Error{
+		Code:       "rate_limit",
+		Message:    "Our servers are currently overloaded. Please try again later.",
+		Retryable:  true,
+		HTTPStatus: http.StatusTooManyRequests,
+		Cause:      FailureCauseOverload,
 	}
 }
 
@@ -39,107 +43,210 @@ func modelStateOrFatal(t *testing.T, manager *Manager, authID, model string) *Mo
 	return updated.ModelStates[model]
 }
 
-func expectWindowAround(t *testing.T, at time.Time, want time.Duration) {
+func expectModelAvailable(t *testing.T, manager *Manager, authID, model string) {
 	t.Helper()
-	d := time.Until(at)
-	if d < want-30*time.Second || d > want+30*time.Second {
-		t.Fatalf("window closes in %v, want about %v", d, want)
+	updated, _ := manager.GetByID(authID)
+	if blocked, reason, next := isAuthBlockedForModel(updated, model, time.Now()); blocked {
+		t.Fatalf("expected %q to stay available after overload, blocked reason=%v next=%v", model, reason, next)
 	}
 }
 
-func TestMarkResultOverloadTakesFiveMinuteLadder(t *testing.T) {
+// Upstream overload is a per-credential, memoryless signal: it feeds the
+// health ring (see TestMarkResultRecordsOverloadInRing) and the weighted
+// selector, never a cooldown window. A credential that was just shed must stay
+// in rotation.
+func TestMarkResultOverloadLeavesModelAvailable(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
-	manager := NewManager(nil, nil, nil)
-	auth := &Auth{ID: "auth-overload-base", Provider: "codex", Metadata: map[string]any{"type": "codex"}}
-	registerOverloadAuth(t, manager, auth)
-
-	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
-	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-	if state.Quota.Reason != FailureCauseOverload {
-		t.Fatalf("Reason = %q, want %q", state.Quota.Reason, FailureCauseOverload)
-	}
-	if state.Quota.BackoffLevel != 1 {
-		t.Fatalf("BackoffLevel = %d, want 1", state.Quota.BackoffLevel)
-	}
-	expectWindowAround(t, state.Quota.NextRecoverAt, overloadBackoffBase)
-	if !state.NextRetryAfter.Equal(state.Quota.NextRecoverAt) {
-		t.Fatalf("NextRetryAfter %v != NextRecoverAt %v", state.NextRetryAfter, state.Quota.NextRecoverAt)
-	}
-	updated, _ := manager.GetByID(auth.ID)
-	if blocked, _, _ := isAuthBlockedForModel(updated, "gpt-5", time.Now()); !blocked {
-		t.Fatal("expected model to be blocked during overload cooldown")
-	}
-}
-
-func TestMarkResultOverloadWithRetryAfterStillTakesLadder(t *testing.T) {
-	withQuotaCooldownEnabled(t)
-
-	manager := NewManager(nil, nil, nil)
-	auth := &Auth{ID: "auth-overload-hint", Provider: "codex", Metadata: map[string]any{"type": "codex"}}
-	registerOverloadAuth(t, manager, auth)
-
-	result := overloadResult(auth.ID, "gpt-5")
 	hint := 42 * time.Second
-	result.RetryAfter = &hint
-	manager.MarkResult(context.Background(), result)
-
-	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-	expectWindowAround(t, state.Quota.NextRecoverAt, overloadBackoffBase)
-	if state.Quota.BackoffLevel != 1 {
-		t.Fatalf("BackoffLevel = %d, want 1", state.Quota.BackoffLevel)
-	}
-}
-
-func TestMarkResultOverloadLadderEscalatesAfterExpiry(t *testing.T) {
-	withQuotaCooldownEnabled(t)
-
 	cases := []struct {
 		name       string
-		seedLevel  int
-		wantLevel  int
-		wantWindow time.Duration
+		retryAfter *time.Duration
 	}{
-		{name: "level1-to-10m", seedLevel: 1, wantLevel: 2, wantWindow: 10 * time.Minute},
-		{name: "level2-to-20m", seedLevel: 2, wantLevel: 3, wantWindow: 20 * time.Minute},
-		{name: "level3-caps-30m", seedLevel: 3, wantLevel: 3, wantWindow: 30 * time.Minute},
+		{name: "no-hint", retryAfter: nil},
+		{name: "retry-after-hint-ignored", retryAfter: &hint},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			expired := time.Now().Add(-time.Second)
 			manager := NewManager(nil, nil, nil)
-			auth := &Auth{
-				ID:       "auth-overload-" + tc.name,
-				Provider: "codex",
-				Metadata: map[string]any{"type": "codex"},
-				ModelStates: map[string]*ModelState{
-					"gpt-5": {
-						Status:         StatusError,
-						Unavailable:    true,
-						NextRetryAfter: expired,
-						Quota:          QuotaState{Exceeded: true, Reason: FailureCauseOverload, NextRecoverAt: expired, BackoffLevel: tc.seedLevel},
-					},
-				},
-			}
+			auth := &Auth{ID: "auth-overload-" + tc.name, Provider: "codex", Metadata: map[string]any{"type": "codex"}}
 			registerOverloadAuth(t, manager, auth)
 
-			manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
+			result := overloadResult(auth.ID, "gpt-5")
+			result.RetryAfter = tc.retryAfter
+			manager.MarkResult(context.Background(), result)
+
 			state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-			if state.Quota.BackoffLevel != tc.wantLevel {
-				t.Fatalf("BackoffLevel = %d, want %d", state.Quota.BackoffLevel, tc.wantLevel)
+			if !state.Quota.NextRecoverAt.IsZero() || !state.NextRetryAfter.IsZero() {
+				t.Fatalf("overload must not arm a window, got quota=%+v nextRetryAfter=%v", state.Quota, state.NextRetryAfter)
 			}
-			expectWindowAround(t, state.Quota.NextRecoverAt, tc.wantWindow)
+			if state.Quota.Exceeded || state.Quota.BackoffLevel != 0 || state.Unavailable {
+				t.Fatalf("overload must leave the model state clean, got %+v", state)
+			}
+			if state.LastError == nil || state.LastError.Cause != FailureCauseOverload {
+				t.Fatalf("overload must still be recorded as the last error, got %+v", state.LastError)
+			}
+			expectModelAvailable(t, manager, auth.ID, "gpt-5")
+			updated, _ := manager.GetByID(auth.ID)
+			if !updated.NextRetryAfter.IsZero() || !updated.Quota.NextRecoverAt.IsZero() || updated.Unavailable {
+				t.Fatalf("overload must not block the credential as a whole, got nextRetryAfter=%v quota=%+v unavailable=%v", updated.NextRetryAfter, updated.Quota, updated.Unavailable)
+			}
 		})
 	}
 }
 
-func TestMarkResultOverloadReusesOpenWindow(t *testing.T) {
+func TestMarkResultOverloadKeepsLiveQuotaWindow(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	open := time.Now().Add(7 * time.Minute)
 	manager := NewManager(nil, nil, nil)
 	auth := &Auth{
-		ID:       "auth-overload-reuse",
+		ID:       "auth-overload-live-quota",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex"},
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: open,
+				Quota:          QuotaState{Exceeded: true, Reason: FailureCauseQuota, NextRecoverAt: open, BackoffLevel: 2},
+			},
+		},
+	}
+	registerOverloadAuth(t, manager, auth)
+
+	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
+	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
+	if !state.Quota.NextRecoverAt.Equal(open) || state.Quota.BackoffLevel != 2 || state.Quota.Reason != FailureCauseQuota {
+		t.Fatalf("a live quota window must survive an overload untouched, got %+v", state.Quota)
+	}
+	updated, _ := manager.GetByID(auth.ID)
+	if blocked, _, _ := isAuthBlockedForModel(updated, "gpt-5", time.Now()); !blocked {
+		t.Fatal("expected model to stay blocked by the live quota window")
+	}
+}
+
+func TestMarkResultOverloadClearsExpiredQuotaWindow(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
+	expired := time.Now().Add(-time.Second)
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-overload-expired-quota",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex"},
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: expired,
+				Quota:          QuotaState{Exceeded: true, Reason: FailureCauseQuota, NextRecoverAt: expired, BackoffLevel: 6},
+			},
+		},
+	}
+	registerOverloadAuth(t, manager, auth)
+
+	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
+	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
+	if state.Quota.Exceeded || !state.Quota.NextRecoverAt.IsZero() || state.Quota.BackoffLevel != 0 || state.Quota.Reason != "" {
+		t.Fatalf("an expired quota window must be cleared, got %+v", state.Quota)
+	}
+	if state.Unavailable {
+		t.Fatal("expected model to be available after the expired window is cleared")
+	}
+	expectModelAvailable(t, manager, auth.ID, "gpt-5")
+}
+
+func TestMarkResultOverloadKeepsLiveTransientCooldown(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
+	open := time.Now().Add(10 * time.Second)
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-overload-live-transient",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex"},
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {Status: StatusError, Unavailable: true, NextRetryAfter: open},
+		},
+	}
+	registerOverloadAuth(t, manager, auth)
+
+	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
+	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
+	if !state.NextRetryAfter.Equal(open) || !state.Unavailable {
+		t.Fatalf("a live transient cooldown must survive an overload untouched, got nextRetryAfter=%v unavailable=%v", state.NextRetryAfter, state.Unavailable)
+	}
+	updated, _ := manager.GetByID(auth.ID)
+	if blocked, _, _ := isAuthBlockedForModel(updated, "gpt-5", time.Now()); !blocked {
+		t.Fatal("expected model to stay blocked by the live transient cooldown")
+	}
+}
+
+func TestApplyAuthFailureStateOverloadLeavesAuthAvailable(t *testing.T) {
+	now := time.Now()
+	auth := &Auth{ID: "auth-overload-credential", Provider: "codex"}
+
+	applyAuthFailureState(auth, overloadError(), nil, now, false)
+
+	if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() || auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("credential-level overload must not block the credential, got unavailable=%v nextRetryAfter=%v quota=%+v", auth.Unavailable, auth.NextRetryAfter, auth.Quota)
+	}
+	if auth.LastError == nil || auth.LastError.Cause != FailureCauseOverload {
+		t.Fatalf("overload must still be recorded as the last error, got %+v", auth.LastError)
+	}
+	if blocked, reason, _ := isAuthBlockedForModel(auth, "", now); blocked {
+		t.Fatalf("expected credential to stay available, blocked reason=%v", reason)
+	}
+}
+
+func TestMarkResultQuotaAfterOverloadReasonReseedsBackoffLevel(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
+	// A window carrying the overload reason can only come from persisted
+	// cooldown state written before overload stopped arming windows; a quota
+	// failure landing after it expires must start the quota ladder fresh.
+	expired := time.Now().Add(-time.Second)
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-reseed-quota",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex"},
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: expired,
+				Quota:          QuotaState{Exceeded: true, Reason: FailureCauseOverload, NextRecoverAt: expired, BackoffLevel: 3},
+			},
+		},
+	}
+	registerOverloadAuth(t, manager, auth)
+
+	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
+	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
+	if state.Quota.BackoffLevel != 1 {
+		t.Fatalf("BackoffLevel = %d, want reseeded 1", state.Quota.BackoffLevel)
+	}
+	d := time.Until(state.Quota.NextRecoverAt)
+	if d <= 0 || d > 5*time.Second {
+		t.Fatalf("quota window closes in %v, want about %v", d, quotaBackoffBase)
+	}
+	if state.Quota.Reason != FailureCauseQuota {
+		t.Fatalf("Reason = %q, want %q", state.Quota.Reason, FailureCauseQuota)
+	}
+}
+
+func TestMarkResultSuccessKeepsOpenCooldownWindow(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
+	// An overload window restored from persisted cooldown state is still
+	// honoured until it expires; a success completing inside it comes from a
+	// request admitted before the window was armed and must not clear it.
+	open := time.Now().Add(7 * time.Minute)
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "auth-overload-wipe",
 		Provider: "codex",
 		Metadata: map[string]any{"type": "codex"},
 		ModelStates: map[string]*ModelState{
@@ -153,102 +260,12 @@ func TestMarkResultOverloadReusesOpenWindow(t *testing.T) {
 	}
 	registerOverloadAuth(t, manager, auth)
 
-	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
-	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-	if state.Quota.BackoffLevel != 2 {
-		t.Fatalf("BackoffLevel = %d, want 2 (in-window failure must not escalate)", state.Quota.BackoffLevel)
-	}
-	if !state.Quota.NextRecoverAt.Equal(open) {
-		t.Fatalf("NextRecoverAt = %v, want reused %v", state.Quota.NextRecoverAt, open)
-	}
-	if state.Quota.Reason != FailureCauseOverload {
-		t.Fatalf("Reason = %q, want %q", state.Quota.Reason, FailureCauseOverload)
-	}
-}
-
-func TestMarkResultCrossCauseReseedsBackoffLevel(t *testing.T) {
-	withQuotaCooldownEnabled(t)
-
-	t.Run("quota-to-overload", func(t *testing.T) {
-		expired := time.Now().Add(-time.Second)
-		manager := NewManager(nil, nil, nil)
-		auth := &Auth{
-			ID:       "auth-reseed-overload",
-			Provider: "codex",
-			Metadata: map[string]any{"type": "codex"},
-			ModelStates: map[string]*ModelState{
-				"gpt-5": {
-					Status:         StatusError,
-					Unavailable:    true,
-					NextRetryAfter: expired,
-					Quota:          QuotaState{Exceeded: true, Reason: FailureCauseQuota, NextRecoverAt: expired, BackoffLevel: 6},
-				},
-			},
-		}
-		registerOverloadAuth(t, manager, auth)
-
-		manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
-		state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-		if state.Quota.BackoffLevel != 1 {
-			t.Fatalf("BackoffLevel = %d, want reseeded 1", state.Quota.BackoffLevel)
-		}
-		expectWindowAround(t, state.Quota.NextRecoverAt, overloadBackoffBase)
-		if state.Quota.Reason != FailureCauseOverload {
-			t.Fatalf("Reason = %q, want %q", state.Quota.Reason, FailureCauseOverload)
-		}
-	})
-
-	t.Run("overload-to-quota", func(t *testing.T) {
-		expired := time.Now().Add(-time.Second)
-		manager := NewManager(nil, nil, nil)
-		auth := &Auth{
-			ID:       "auth-reseed-quota",
-			Provider: "codex",
-			Metadata: map[string]any{"type": "codex"},
-			ModelStates: map[string]*ModelState{
-				"gpt-5": {
-					Status:         StatusError,
-					Unavailable:    true,
-					NextRetryAfter: expired,
-					Quota:          QuotaState{Exceeded: true, Reason: FailureCauseOverload, NextRecoverAt: expired, BackoffLevel: 3},
-				},
-			},
-		}
-		registerOverloadAuth(t, manager, auth)
-
-		manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
-		state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-		if state.Quota.BackoffLevel != 1 {
-			t.Fatalf("BackoffLevel = %d, want reseeded 1", state.Quota.BackoffLevel)
-		}
-		d := time.Until(state.Quota.NextRecoverAt)
-		if d <= 0 || d > 5*time.Second {
-			t.Fatalf("quota window closes in %v, want about %v", d, quotaBackoffBase)
-		}
-		if state.Quota.Reason != FailureCauseQuota {
-			t.Fatalf("Reason = %q, want %q", state.Quota.Reason, FailureCauseQuota)
-		}
-	})
-}
-
-func TestMarkResultSuccessKeepsOpenCooldownWindow(t *testing.T) {
-	withQuotaCooldownEnabled(t)
-
-	manager := NewManager(nil, nil, nil)
-	auth := &Auth{ID: "auth-overload-wipe", Provider: "codex", Metadata: map[string]any{"type": "codex"}}
-	registerOverloadAuth(t, manager, auth)
-
-	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
-	armed := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-
-	// An in-flight request admitted before the window was armed completes
-	// successfully; its result is stale evidence and must not clear the window.
 	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
 	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-	if !state.Quota.NextRecoverAt.Equal(armed.Quota.NextRecoverAt) {
-		t.Fatalf("NextRecoverAt = %v, want untouched %v", state.Quota.NextRecoverAt, armed.Quota.NextRecoverAt)
+	if !state.Quota.NextRecoverAt.Equal(open) {
+		t.Fatalf("NextRecoverAt = %v, want untouched %v", state.Quota.NextRecoverAt, open)
 	}
-	if !state.Quota.Exceeded || state.Quota.BackoffLevel != armed.Quota.BackoffLevel {
+	if !state.Quota.Exceeded || state.Quota.BackoffLevel != 2 {
 		t.Fatalf("quota state changed by in-window success: %+v", state.Quota)
 	}
 	updated, _ := manager.GetByID(auth.ID)
@@ -311,28 +328,5 @@ func TestUpdateAggregatedAvailabilitySharedOverloadReason(t *testing.T) {
 	updateAggregatedAvailability(auth, now)
 	if auth.Quota.Reason != FailureCauseQuota {
 		t.Fatalf("mixed aggregated Reason = %q, want %q", auth.Quota.Reason, FailureCauseQuota)
-	}
-}
-
-func TestMarkResultOverloadDisableCoolingLeavesNoWindow(t *testing.T) {
-	prev := quotaCooldownDisabled.Load()
-	quotaCooldownDisabled.Store(true)
-	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
-
-	manager := NewManager(nil, nil, nil)
-	auth := &Auth{ID: "auth-overload-nocooling", Provider: "codex", Metadata: map[string]any{"type": "codex"}}
-	registerOverloadAuth(t, manager, auth)
-
-	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
-	state := modelStateOrFatal(t, manager, auth.ID, "gpt-5")
-	if !state.Quota.NextRecoverAt.IsZero() || !state.NextRetryAfter.IsZero() {
-		t.Fatalf("expected no cooldown window with cooling disabled, got %+v", state.Quota)
-	}
-	if state.Quota.BackoffLevel != 0 {
-		t.Fatalf("BackoffLevel = %d, want 0 with cooling disabled", state.Quota.BackoffLevel)
-	}
-	updated, _ := manager.GetByID(auth.ID)
-	if blocked, _, _ := isAuthBlockedForModel(updated, "gpt-5", time.Now()); blocked {
-		t.Fatal("expected model to stay available with cooling disabled")
 	}
 }

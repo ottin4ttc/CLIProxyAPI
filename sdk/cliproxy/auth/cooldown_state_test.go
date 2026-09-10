@@ -241,16 +241,9 @@ func TestManager_MarkResult_PersistsCooldownOnlyWhenStateChanges(t *testing.T) {
 		t.Fatalf("healthy success saved cooldown state %d times, want 0", got)
 	}
 
-	manager.MarkResult(context.Background(), overloadResult(auth.ID, "gpt-5"))
+	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("cooldown failure saved cooldown state %d times, want 1", got)
-	}
-
-	// A success inside the open overload window keeps the cooldown untouched
-	// and must not rewrite the persisted state.
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "codex", Model: "gpt-5", Success: true})
-	if got := store.saveCount.Load(); got != 1 {
-		t.Fatalf("in-window success saved cooldown state %d times, want 1", got)
 	}
 
 	// Once the window expires, a success clears the state; the persisted

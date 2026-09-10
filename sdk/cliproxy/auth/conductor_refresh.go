@@ -33,15 +33,8 @@ const (
 	refreshIneffectiveBackoff = 30 * time.Second
 	quotaBackoffBase          = time.Second
 	quotaBackoffMax           = 30 * time.Minute
-	// overloadBackoffBase/Max drive the per-auth-per-model cooldown ladder for
-	// upstream overload (cause "overload") 429s: 5 -> 10 -> 20 -> 30 minutes.
-	// Overload is a sustained per-account degraded state, so the ladder only
-	// spaces out probes on long episodes; the first rung stays at five minutes
-	// because most episodes recover on the first probe.
-	overloadBackoffBase    = 5 * time.Minute
-	overloadBackoffMax     = 30 * time.Minute
-	minQuotaCooldownFloor  = 10 * time.Second
-	transientErrorCooldown = time.Minute
+	minQuotaCooldownFloor     = 10 * time.Second
+	transientErrorCooldown    = time.Minute
 )
 
 // StartAutoRefresh launches a background loop that evaluates auth freshness
