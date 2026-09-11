@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -35,6 +36,41 @@ type Error struct {
 	// "overload" or "quota". It drives the rotate-versus-fall-back decision and
 	// is deliberately separate from Code, which carries unrelated identifiers.
 	Cause string `json:"cause,omitempty"`
+}
+
+// IsTerminalAuthError checks if err or any error in its chain represents a permanent upstream auth failure.
+func IsTerminalAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	type terminalAuthProvider interface {
+		IsTerminalAuth() bool
+	}
+	var tap terminalAuthProvider
+	if errors.As(err, &tap) && tap != nil {
+		return tap.IsTerminalAuth()
+	}
+	return false
+}
+
+type terminalAuthError struct {
+	*errorWithCause
+}
+
+func (e *terminalAuthError) IsTerminalAuth() bool {
+	return true
+}
+
+// NewTerminalAuthError wraps an *Error and cause as a terminal upstream authentication failure.
+func NewTerminalAuthError(err *Error, cause error) error {
+	if err == nil {
+		return nil
+	}
+	base := WithCause(err, cause)
+	if ewc, ok := base.(*errorWithCause); ok && ewc != nil {
+		return &terminalAuthError{errorWithCause: ewc}
+	}
+	return &terminalAuthError{errorWithCause: &errorWithCause{base: err, cause: cause}}
 }
 
 // Error implements the error interface.

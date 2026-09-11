@@ -320,6 +320,10 @@ codex:
   # model-fallback:
   #   - from: gpt-5.6-sol
   #     to: [gpt-5.6-terra, gpt-5.6-luna]
+  # When true, scope Codex usage_limit_reached quota cooldowns to the requested model rather
+  # than cooling down the entire credential across all sibling models.
+  # Default: false
+  model-level-cooling: false
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:

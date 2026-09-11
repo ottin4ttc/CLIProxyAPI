@@ -182,6 +182,9 @@ type CodexConfig struct {
 	// upstream capacity or overload errors. Quota exhaustion never triggers it.
 	// Empty disables the feature.
 	ModelFallback []CodexModelFallback `yaml:"model-fallback,omitempty" json:"model-fallback,omitempty"`
+	// ModelLevelCooling scopes Codex usage_limit_reached quota cooldowns to the requested model
+	// rather than cooling down the entire credential across all sibling models.
+	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
 }

@@ -27,6 +27,10 @@ func (e statusErrWithHeaders) Headers() http.Header {
 }
 
 func parseCodexWebsocketError(payload []byte) (error, bool) {
+	return parseCodexWebsocketErrorWithCooling(payload, false)
+}
+
+func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool) (error, bool) {
 	if len(payload) == 0 {
 		return nil, false
 	}
@@ -52,16 +56,22 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 
 	out := buildCodexWebsocketErrorPayload(payload, status)
 	headers := parseCodexWebsocketErrorHeaders(payload)
+	isUsageLimit := isCodexUsageLimitError(out)
 	// The cause must be attached here, not only the cooldown below: the cooldown
 	// this error writes is shared per-auth-per-model state, and a later
 	// translated HTTP request reads ModelState.LastError.Cause to decide whether
 	// an all-credentials-cooling model is overloaded (degradable) or quota
 	// exhausted (not). An empty cause there silently disables the model fallback
 	// in any deployment mixing websocket and HTTP clients.
-	statusError := statusErr{code: status, msg: string(out), cause: codexFailureCause(out), credentialScoped: isCodexUsageLimitError(out)}
+	statusError := statusErr{
+		code:             status,
+		msg:              string(out),
+		cause:            codexFailureCause(out),
+		credentialScoped: isUsageLimit && !modelLevelCooling,
+	}
 	// Overload/capacity 429s deliberately carry no retryAfter: the auth layer
-	// routes cause "overload" onto its own escalating cooldown ladder, and a
-	// hint here would bypass it.
+	// keeps overloaded credentials in rotation, and a hint here would be read
+	// as a quota resets_at.
 	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
 		statusError.retryAfter = retryAfter
 	} else if isCodexWebsocketConnectionLimitError(payload) {

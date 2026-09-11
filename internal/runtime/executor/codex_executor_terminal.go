@@ -148,22 +148,30 @@ func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
 }
 
 func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
+	return codexTerminalStreamErrWithCooling(eventData, false)
+}
+
+func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool) (statusErr, []byte, bool) {
 	body, ok := codexTerminalFailureBody(eventData)
 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErr(http.StatusBadRequest, body), body, true
+	return newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling), body, true
 }
 
 func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
-	if streamErr, body, ok := codexTerminalStreamErr(eventData); ok {
+	return codexTerminalFailureErrWithCooling(eventData, false)
+}
+
+func codexTerminalFailureErrWithCooling(eventData []byte, modelLevelCooling bool) (statusErr, []byte, bool) {
+	if streamErr, body, ok := codexTerminalStreamErrWithCooling(eventData, modelLevelCooling); ok {
 		return streamErr, body, true
 	}
 	body, ok := codexTerminalFailureBody(eventData)
 	if !ok {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErr(codexTerminalFailureStatus(body), body), body, true
+	return newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling), body, true
 }
 
 func codexTerminalFailureStatus(body []byte) int {
@@ -178,16 +186,16 @@ func codexTerminalFailureStatus(body []byte) int {
 	switch {
 	case errorCode == "cyber_policy":
 		return http.StatusBadRequest
-	case errorType == "invalid_request_error", errorType == "bad_request_error":
-		return http.StatusBadRequest
+	case errorType == "not_found_error", errorCode == "not_found", errorCode == "model_not_found":
+		return http.StatusNotFound
 	case errorType == "authentication_error", errorCode == "invalid_api_key", errorCode == "unauthorized":
 		return http.StatusUnauthorized
 	case errorType == "permission_error", errorCode == "forbidden", errorCode == "permission_denied":
 		return http.StatusForbidden
-	case errorType == "not_found_error", errorCode == "not_found", errorCode == "model_not_found":
-		return http.StatusNotFound
 	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded":
 		return http.StatusTooManyRequests
+	case errorType == "invalid_request_error", errorType == "bad_request_error":
+		return http.StatusBadRequest
 	default:
 		return http.StatusBadGateway
 	}
@@ -212,6 +220,9 @@ func codexTerminalFailureBody(eventData []byte) ([]byte, bool) {
 	}
 	if len(body) == 0 {
 		body = []byte(`{"error":{"message":"upstream stream failed without error details"}}`)
+	}
+	if seq := gjson.GetBytes(eventData, "sequence_number"); seq.Exists() {
+		body, _ = sjson.SetBytes(body, "sequence_number", seq.Int())
 	}
 	return body, true
 }
@@ -319,17 +330,22 @@ func codexFailureCause(body []byte) string {
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {
+	return newCodexStatusErrWithCooling(statusCode, body, false)
+}
+
+func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling bool) statusErr {
 	errCode := statusCode
-	credentialScoped := isCodexUsageLimitError(body)
-	if isCodexModelCapacityError(body) || credentialScoped || isCodexOverloadedError(body) {
+	isUsageLimit := isCodexUsageLimitError(body)
+	credentialScoped := isUsageLimit && !modelLevelCooling
+	if isCodexModelCapacityError(body) || isUsageLimit || isCodexOverloadedError(body) {
 		errCode = http.StatusTooManyRequests
 	}
 	cause := codexFailureCause(body)
 	body = classifyCodexStatusError(errCode, body)
 	err := statusErr{code: errCode, msg: string(body), cause: cause, credentialScoped: credentialScoped}
 	// Overload/capacity 429s deliberately carry no retryAfter: the auth layer
-	// routes cause "overload" onto its own escalating cooldown ladder, and a
-	// hint here would bypass it.
+	// keeps overloaded credentials in rotation, and a hint here would be read
+	// as a quota resets_at.
 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
 	}
@@ -396,8 +412,10 @@ func isCodexModelCapacityError(errorBody []byte) bool {
 		if lower == "" {
 			continue
 		}
-		if strings.Contains(lower, "selected model is at capacity") ||
-			strings.Contains(lower, "model is at capacity. please try a different model") {
+		if strings.Contains(lower, "model is at capacity") ||
+			strings.Contains(lower, "model_at_capacity") ||
+			strings.Contains(lower, "model_is_at_capacity") ||
+			(strings.Contains(lower, "model") && strings.Contains(lower, "at capacity")) {
 			return true
 		}
 	}
@@ -513,6 +531,9 @@ func newCodexBootstrapOverloadErr(body []byte) statusErr {
 // Only these failures justify replacing the whole attempt during bootstrap; every other terminal
 // failure keeps the original in-stream delivery semantics so downstream behaviour is unchanged.
 func isCodexOverloadBootstrapFailure(body []byte) bool {
+	if isCodexModelCapacityError(body) {
+		return true
+	}
 	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
 	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
 	errorMessage := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.message").String()))
