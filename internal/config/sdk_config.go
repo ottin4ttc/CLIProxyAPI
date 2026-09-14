@@ -67,6 +67,9 @@ type SDKConfig struct {
 	// APIKeyLimits configures per-client-API-key request rate limits.
 	APIKeyLimits APIKeyLimits `yaml:"api-key-limits" json:"api-key-limits"`
 
+	// ModelAccess restricts models matching a rule to that rule's client API keys.
+	ModelAccess ModelAccess `yaml:"model-access" json:"model-access"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
@@ -253,4 +256,95 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+}
+
+// ModelAccess restricts models matching a rule to that rule's client API keys.
+type ModelAccess struct {
+	// Enabled turns enforcement on. When false, Rules are ignored entirely.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Rules lists model patterns and the client API keys allowed to use them.
+	Rules []ModelAccessRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// ModelAccessRule allows only APIKeys to use models matching any of Models.
+type ModelAccessRule struct {
+	// Models lists model names or wildcard patterns ('*' matches any substring).
+	Models []string `yaml:"models" json:"models"`
+
+	// APIKeys lists the client API keys allowed to use the matched models. An
+	// empty list locks the matched models for every key.
+	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+}
+
+// ModelAccessAllowed reports whether the client API key may use model. Models
+// matched by no rule are always allowed; a matched model is allowed only when
+// at least one matching rule lists the key. A "prefix/model" request is also
+// matched by its bare model name so provider prefixes need no separate rule.
+// Configured keys are trimmed before comparison, matching CodexBucketForAPIKey;
+// apiKey is compared as-is since it comes straight from the caller's request.
+func (c *SDKConfig) ModelAccessAllowed(apiKey, model string) bool {
+	if c == nil || !c.ModelAccess.Enabled {
+		return true
+	}
+	model = strings.TrimSpace(model)
+	bare := model
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		bare = model[idx+1:]
+	}
+	matched := false
+	for _, rule := range c.ModelAccess.Rules {
+		if !rule.matches(model) && !rule.matches(bare) {
+			continue
+		}
+		matched = true
+		for _, key := range rule.APIKeys {
+			if key = strings.TrimSpace(key); key != "" && key == apiKey {
+				return true
+			}
+		}
+	}
+	return !matched
+}
+
+func (r ModelAccessRule) matches(model string) bool {
+	for _, pattern := range r.Models {
+		if matchModelAccessPattern(strings.TrimSpace(pattern), model) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchModelAccessPattern matches value against pattern where '*' matches any
+// substring, including the empty one. An empty pattern matches nothing.
+func matchModelAccessPattern(pattern, value string) bool {
+	if pattern == "" {
+		return false
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+	parts := strings.Split(pattern, "*")
+	if prefix := parts[0]; !strings.HasPrefix(value, prefix) {
+		return false
+	} else {
+		value = value[len(prefix):]
+	}
+	if suffix := parts[len(parts)-1]; !strings.HasSuffix(value, suffix) {
+		return false
+	} else {
+		value = value[:len(value)-len(suffix)]
+	}
+	for _, part := range parts[1 : len(parts)-1] {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(value, part)
+		if idx < 0 {
+			return false
+		}
+		value = value[idx+len(part):]
+	}
+	return true
 }

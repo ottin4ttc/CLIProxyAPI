@@ -74,6 +74,17 @@ api-keys:
 #   overrides:
 #     "sk-xxx": 120
 
+# Optional: restrict specific models to an allowlist of client API keys.
+# Off by default; rules are ignored until enabled is true. A model matched by a
+# rule (exact name or '*' wildcard) is only served to the keys listed there and
+# is hidden from that key's model list otherwise; models matched by no rule stay
+# open to every key. "prefix/model" requests are matched by the bare model name.
+# model-access:
+#   enabled: false
+#   rules:
+#     - models: ["deepseek-*"]
+#       api-keys: ["sk-xxx"]
+
 # Enable debug logging
 debug: false
 

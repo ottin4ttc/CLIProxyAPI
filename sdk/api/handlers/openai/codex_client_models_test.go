@@ -28,7 +28,7 @@ func TestCodexClientModelsResponseMultiAgentV2FollowsConfig(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base.Cfg.CodexOptimizeMultiAgentV2 = tt.enabled
-			response := handler.codexClientModelsResponse()
+			response := handler.codexClientModelsResponse(handler.Models())
 			models, ok := response["models"].([]map[string]any)
 			if !ok {
 				t.Fatalf("models type = %T, want []map[string]any", response["models"])
@@ -76,7 +76,7 @@ func TestCodexClientModelsResponseClientVersionFiltering(t *testing.T) {
 	handler := NewOpenAIAPIHandler(base)
 
 	// Test with older client version 0.137.0
-	respOld := handler.codexClientModelsResponse("0.137.0")
+	respOld := handler.codexClientModelsResponse(handler.Models(), "0.137.0")
 	modelsOld, ok := respOld["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", respOld["models"])
@@ -105,7 +105,7 @@ func TestCodexClientModelsResponseClientVersionFiltering(t *testing.T) {
 	}
 
 	// Test with newer client version 0.149.1
-	respNew := handler.codexClientModelsResponse("0.149.1")
+	respNew := handler.codexClientModelsResponse(handler.Models(), "0.149.1")
 	modelsNew, ok := respNew["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", respNew["models"])
@@ -188,7 +188,7 @@ func TestCodexClientModelsResponse_OAuthAliasesIntegration(t *testing.T) {
 
 	base := handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil)
 	handler := NewOpenAIAPIHandler(base)
-	resp := handler.codexClientModelsResponse("0.153.4")
+	resp := handler.codexClientModelsResponse(handler.Models(), "0.153.4")
 	models, ok := resp["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models type = %T, want []map[string]any", resp["models"])

@@ -684,7 +684,27 @@ func (s *Server) handleGrokModels(c *gin.Context) {
 	} else {
 		models = grokModelsFromRegistryInfos(registry.GetGlobalRegistry().GetAvailableModelInfos())
 	}
+	models = s.filterGrokModelsForRequest(c, models)
 	s.writeModelListResponse(c, "openai", grokbuild.BuildResponse(models))
+}
+
+// filterGrokModelsForRequest applies model-access rules to the Grok shell
+// model list, mirroring BaseAPIHandler.FilterModelsForRequest.
+func (s *Server) filterGrokModelsForRequest(c *gin.Context, models []grokbuild.ModelInfo) []grokbuild.ModelInfo {
+	if s == nil || s.cfg == nil || !s.cfg.ModelAccess.Enabled || c == nil {
+		return models
+	}
+	apiKey := ""
+	if value, exists := c.Get("userApiKey"); exists && value != nil {
+		apiKey = fmt.Sprint(value)
+	}
+	filtered := make([]grokbuild.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if s.cfg.ModelAccessAllowed(apiKey, model.ID) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 func (s *Server) writeModelListResponse(c *gin.Context, sourceFormat string, payload any) {

@@ -66,6 +66,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			oldCfg.APIKeyLimits.ExemptBuckets, newCfg.APIKeyLimits.ExemptBuckets,
 			len(oldCfg.APIKeyLimits.Overrides), len(newCfg.APIKeyLimits.Overrides)))
 	}
+	if !reflect.DeepEqual(oldCfg.ModelAccess, newCfg.ModelAccess) {
+		// Rule keys are API keys; only counts are safe to log.
+		changes = append(changes, fmt.Sprintf("model-access: enabled %t -> %t, rules %d -> %d",
+			oldCfg.ModelAccess.Enabled, newCfg.ModelAccess.Enabled,
+			len(oldCfg.ModelAccess.Rules), len(newCfg.ModelAccess.Rules)))
+	}
 	if oldCfg.DisableImageGeneration != newCfg.DisableImageGeneration {
 		changes = append(changes, fmt.Sprintf("disable-image-generation: %v -> %v", oldCfg.DisableImageGeneration, newCfg.DisableImageGeneration))
 	}
