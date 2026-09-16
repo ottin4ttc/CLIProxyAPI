@@ -70,6 +70,10 @@ type SDKConfig struct {
 	// ModelAccess restricts models matching a rule to that rule's client API keys.
 	ModelAccess ModelAccess `yaml:"model-access" json:"model-access"`
 
+	// CodexBucketModelRoutes rewrites a requested model to another provider's
+	// model for client API keys in a given codex bucket.
+	CodexBucketModelRoutes CodexBucketModelRoutes `yaml:"codex-bucket-model-routes" json:"codex-bucket-model-routes"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
@@ -147,6 +151,99 @@ func (c *SDKConfig) ValidateCodexBuckets() error {
 			}
 			seen[key] = name
 		}
+	}
+	return nil
+}
+
+// CodexBucketModelRoutes rewrites a requested model to another provider's
+// model for client API keys in a given codex bucket, before credential
+// selection. Keys in other buckets keep the normal model resolution.
+type CodexBucketModelRoutes struct {
+	// Enabled turns routing on. When false, Rules are ignored entirely.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Rules lists the per-bucket model rewrites.
+	Rules []CodexBucketModelRoute `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// CodexBucketModelRoute sends requests for From from keys in Bucket to
+// provider Provider using model To.
+type CodexBucketModelRoute struct {
+	// Bucket is the codex bucket name; "default" or empty means keys not
+	// mapped to any bucket.
+	Bucket string `yaml:"bucket" json:"bucket"`
+
+	// From is the client-requested model name (exact match).
+	From string `yaml:"from" json:"from"`
+
+	// Provider is the target provider key (e.g. antigravity, or an
+	// openai-compatibility entry name).
+	Provider string `yaml:"provider" json:"provider"`
+
+	// To is the model name sent to Provider.
+	To string `yaml:"to" json:"to"`
+}
+
+// CodexBucketDefaultName is the rule bucket name that stands for keys not
+// mapped to any codex bucket (whose bucket resolves to "").
+const CodexBucketDefaultName = "default"
+
+func normalizeCodexBucketRuleName(bucket string) string {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == CodexBucketDefaultName {
+		return ""
+	}
+	return bucket
+}
+
+// CodexBucketModelRoute returns the target provider and model for a request
+// from a key in bucket ("" for unmapped keys) asking for model. ok is false
+// when routing is disabled or no rule matches.
+func (c *SDKConfig) CodexBucketModelRoute(bucket, model string) (provider, to string, ok bool) {
+	if c == nil || !c.CodexBucketModelRoutes.Enabled {
+		return "", "", false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", "", false
+	}
+	for _, rule := range c.CodexBucketModelRoutes.Rules {
+		if normalizeCodexBucketRuleName(rule.Bucket) != bucket || strings.TrimSpace(rule.From) != model {
+			continue
+		}
+		provider = strings.ToLower(strings.TrimSpace(rule.Provider))
+		to = strings.TrimSpace(rule.To)
+		if provider == "" || to == "" {
+			continue
+		}
+		return provider, to, true
+	}
+	return "", "", false
+}
+
+// ValidateCodexBucketModelRoutes rejects rules missing from/provider/to and
+// rules that repeat the same bucket+from pair.
+func (c *SDKConfig) ValidateCodexBucketModelRoutes() error {
+	if c == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(c.CodexBucketModelRoutes.Rules))
+	for i, rule := range c.CodexBucketModelRoutes.Rules {
+		from := strings.TrimSpace(rule.From)
+		if from == "" {
+			return fmt.Errorf("codex-bucket-model-routes: rule %d has an empty from", i)
+		}
+		if strings.TrimSpace(rule.Provider) == "" {
+			return fmt.Errorf("codex-bucket-model-routes: rule %d (%s) has an empty provider", i, from)
+		}
+		if strings.TrimSpace(rule.To) == "" {
+			return fmt.Errorf("codex-bucket-model-routes: rule %d (%s) has an empty to", i, from)
+		}
+		key := normalizeCodexBucketRuleName(rule.Bucket) + "\x00" + from
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("codex-bucket-model-routes: model %q is routed twice for bucket %q", from, rule.Bucket)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }

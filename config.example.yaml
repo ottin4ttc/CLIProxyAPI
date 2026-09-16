@@ -85,6 +85,21 @@ api-keys:
 #     - models: ["deepseek-*"]
 #       api-keys: ["sk-xxx"]
 
+# Optional: rewrite a requested model to another provider's model for client API
+# keys in a given codex bucket (see codex-buckets above). Off by default. A rule
+# matches when the key's bucket and the exact requested model match; the request
+# is then executed on `provider` with model `to`, while the client still sees the
+# name it asked for in responses and model lists. Bucket "default" (or empty) means
+# keys not mapped to any bucket. `provider` is a provider key such as antigravity,
+# or the name of an openai-compatibility entry. Keys in other buckets are unaffected.
+# codex-bucket-model-routes:
+#   enabled: false
+#   rules:
+#     - bucket: default
+#       from: gpt-5.6-sol
+#       provider: antigravity
+#       to: gemini-3.8-flash-high
+
 # Enable debug logging
 debug: false
 

@@ -102,6 +102,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if errValidate := cfg.ValidateCodexBuckets(); errValidate != nil {
 		return nil, errValidate
 	}
+	if errValidate := cfg.ValidateCodexBucketModelRoutes(); errValidate != nil {
+		return nil, errValidate
+	}
 	if errValidate := cfg.ValidateAPIKeyLimits(); errValidate != nil {
 		return nil, errValidate
 	}

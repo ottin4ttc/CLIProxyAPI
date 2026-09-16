@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/sjson"
 
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
@@ -322,7 +323,36 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 	return false
 }
 
+// applyModelRouter resolves a route for the request: plugin model routers are
+// consulted first; when none handles it, the configured codex bucket model
+// routes apply.
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
+	decision := h.applyPluginModelRouter(ctx, handlerType, modelName, rawJSON, stream, execOptions)
+	if decision.ExecutorPluginID != "" || decision.Provider != "" {
+		return decision
+	}
+	return h.bucketModelRoute(ctx, modelName)
+}
+
+// bucketModelRoute rewrites the requested model to another provider's model
+// when codex-bucket-model-routes has a rule for the client API key's bucket.
+// Requests without an authenticated client API key are never rewritten.
+func (h *BaseAPIHandler) bucketModelRoute(ctx context.Context, modelName string) modelRouteDecision {
+	if h == nil || h.Cfg == nil || !h.Cfg.CodexBucketModelRoutes.Enabled || ctx == nil {
+		return modelRouteDecision{}
+	}
+	ginCtx, _ := ctx.Value("gin").(*gin.Context)
+	if requestAPIKey(ginCtx) == "" {
+		return modelRouteDecision{}
+	}
+	provider, target, ok := h.Cfg.CodexBucketModelRoute(requestCodexBucket(ginCtx, h.Cfg), modelName)
+	if !ok {
+		return modelRouteDecision{}
+	}
+	return modelRouteDecision{Provider: provider, Model: target}
+}
+
+func (h *BaseAPIHandler) applyPluginModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
 	host := h.modelRouterHost()
 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {

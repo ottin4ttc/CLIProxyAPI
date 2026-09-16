@@ -72,6 +72,11 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			oldCfg.ModelAccess.Enabled, newCfg.ModelAccess.Enabled,
 			len(oldCfg.ModelAccess.Rules), len(newCfg.ModelAccess.Rules)))
 	}
+	if !reflect.DeepEqual(oldCfg.CodexBucketModelRoutes, newCfg.CodexBucketModelRoutes) {
+		changes = append(changes, fmt.Sprintf("codex-bucket-model-routes: enabled %t -> %t, rules %d -> %d",
+			oldCfg.CodexBucketModelRoutes.Enabled, newCfg.CodexBucketModelRoutes.Enabled,
+			len(oldCfg.CodexBucketModelRoutes.Rules), len(newCfg.CodexBucketModelRoutes.Rules)))
+	}
 	if oldCfg.DisableImageGeneration != newCfg.DisableImageGeneration {
 		changes = append(changes, fmt.Sprintf("disable-image-generation: %v -> %v", oldCfg.DisableImageGeneration, newCfg.DisableImageGeneration))
 	}
