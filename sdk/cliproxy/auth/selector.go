@@ -500,9 +500,9 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 		}
 		if reason == blockReasonCooldown {
 			cooldownCount++
-			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-				earliest = next
-			}
+		}
+		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
+			earliest = next
 		}
 	}
 	return available, cooldownCount, earliest
@@ -560,7 +560,7 @@ func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, no
 			}
 			return nil, newModelCooldownErrorFull(model, providerForError, resetIn, cooldownReasonForModel(auths, model), nil)
 		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+		return nil, newAuthUnavailableError(earliest, now)
 	}
 
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
