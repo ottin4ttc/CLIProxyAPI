@@ -298,3 +298,31 @@ func TestApplyModelPrefixes_PreservesMetadataModelID(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyModelPrefixes_PrefixesDisplayName(t *testing.T) {
+	models := []*ModelInfo{
+		{ID: "deepseek-v4-flash"},
+		{ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro"},
+	}
+
+	out := applyModelPrefixes(models, "baidu", false)
+
+	entryMap := make(map[string]*ModelInfo, len(out))
+	for _, m := range out {
+		entryMap[m.ID] = m
+	}
+
+	if m := entryMap["deepseek-v4-flash"]; m == nil || m.DisplayName != "" {
+		t.Fatalf("unprefixed deepseek-v4-flash DisplayName changed: %+v", m)
+	}
+	if m := entryMap["baidu/deepseek-v4-flash"]; m == nil {
+		t.Fatal("missing baidu/deepseek-v4-flash")
+	} else if m.DisplayName != "baidu/deepseek-v4-flash" {
+		t.Fatalf("baidu/deepseek-v4-flash DisplayName = %q, want baidu/deepseek-v4-flash", m.DisplayName)
+	}
+	if m := entryMap["baidu/deepseek-v4-pro"]; m == nil {
+		t.Fatal("missing baidu/deepseek-v4-pro")
+	} else if m.DisplayName != "baidu/DeepSeek V4 Pro" {
+		t.Fatalf("baidu/deepseek-v4-pro DisplayName = %q, want baidu/DeepSeek V4 Pro", m.DisplayName)
+	}
+}

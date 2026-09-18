@@ -656,6 +656,13 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		}
 		clone := cloneModelInfoForCatalogRoute(model)
 		clone.ID = trimmedPrefix + "/" + baseID
+		// Carry the prefix into the display name so prefixed and unprefixed
+		// entries stay distinguishable in clients that render display_name.
+		displayName := strings.TrimSpace(model.DisplayName)
+		if displayName == "" {
+			displayName = baseID
+		}
+		clone.DisplayName = trimmedPrefix + "/" + displayName
 		if clone.MetadataModelID == "" {
 			clone.MetadataModelID = baseID
 		}
