@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -672,6 +673,64 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_RestoresNamespace
 	}
 	if got := completed.Get("response.output.0.namespace").String(); got != "mcp__test_mcp__" {
 		t.Fatalf("completed output namespace = %q, want mcp__test_mcp__", got)
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ResolvesToolIdentityOncePerStream(t *testing.T) {
+	originalRequest := []byte(`{
+		"model":"deepseek-v4-flash",
+		"tools":[
+			{
+				"type":"namespace",
+				"name":"mcp__test_mcp__",
+				"tools":[{"type":"function","name":"add_numbers","parameters":{"type":"object","properties":{}}}]
+			}
+		]
+	}`)
+	chunks := []string{
+		`data: {"id":"chatcmpl_memo","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"mcp__test_mcp__add_numbers","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_memo","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1,\"b\":2}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_memo","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"mcp__test_mcp__add_numbers","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_memo","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"a\":3,\"b\":4}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	resolved := 0
+	for i, line := range chunks {
+		// Only the first chunk may look at the request; later chunks must reuse
+		// the picked document instead of re-validating the whole request.
+		request := originalRequest
+		if i > 0 {
+			request = []byte(`{"tools":[]}`)
+		}
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, nil, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if (event != "response.output_item.added" && event != "response.output_item.done") || data.Get("item.type").String() != "function_call" {
+				continue
+			}
+			resolved++
+			if got := data.Get("item.name").String(); got != "add_numbers" {
+				t.Fatalf("%s item.name = %q, want add_numbers", event, got)
+			}
+			if got := data.Get("item.namespace").String(); got != "mcp__test_mcp__" {
+				t.Fatalf("%s item.namespace = %q, want mcp__test_mcp__", event, got)
+			}
+		}
+	}
+	if resolved != 4 {
+		t.Fatalf("expected 2 added + 2 done function_call events, got %d", resolved)
+	}
+
+	st := param.(*oaiToResponsesState)
+	if !bytes.Equal(st.RequestJSON, originalRequest) {
+		t.Fatalf("expected the stream to keep the request picked on the first chunk")
+	}
+	if _, ok := st.ToolNames["mcp__test_mcp__add_numbers"]; !ok {
+		t.Fatalf("expected the canonical tool name to be memoized")
+	}
+	if identity, ok := st.ToolIdentities["mcp__test_mcp__add_numbers"]; !ok || identity.name != "add_numbers" || identity.namespace != "mcp__test_mcp__" {
+		t.Fatalf("expected the tool identity to be memoized, got %+v (present=%t)", identity, ok)
 	}
 }
 

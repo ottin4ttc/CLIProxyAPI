@@ -9,7 +9,47 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"golang.org/x/crypto/bcrypt"
 )
+
+func TestAuthenticateManagementKey_RemembersVerifiedKeyPerSecretHash(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("test-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash secret: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.RemoteManagement.SecretKey = string(hash)
+	h := &Handler{cfg: cfg, failedAttempts: make(map[string]*attemptInfo)}
+
+	if allowed, _, msg := h.AuthenticateManagementKey("127.0.0.1", true, "test-secret"); !allowed {
+		t.Fatalf("expected correct key to pass bcrypt: %q", msg)
+	}
+	if h.verifiedKey.Load() == nil {
+		t.Fatalf("expected the verified key to be remembered")
+	}
+	if allowed, _, msg := h.AuthenticateManagementKey("127.0.0.1", true, "test-secret"); !allowed {
+		t.Fatalf("expected remembered key to pass: %q", msg)
+	}
+	if allowed, _, _ := h.AuthenticateManagementKey("127.0.0.1", true, "wrong-secret"); allowed {
+		t.Fatalf("expected a different key to be rejected while one is remembered")
+	}
+
+	// A rotated hash must not honour the remembered key.
+	rotated, err := bcrypt.GenerateFromPassword([]byte("rotated-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash rotated secret: %v", err)
+	}
+	cfg.RemoteManagement.SecretKey = string(rotated)
+	if allowed, _, _ := h.AuthenticateManagementKey("127.0.0.1", true, "test-secret"); allowed {
+		t.Fatalf("expected the old key to be rejected after rotation")
+	}
+	if allowed, _, msg := h.AuthenticateManagementKey("127.0.0.1", true, "rotated-secret"); !allowed {
+		t.Fatalf("expected the rotated key to pass: %q", msg)
+	}
+	if cached := h.verifiedKey.Load(); cached == nil || cached.secretHash != string(rotated) {
+		t.Fatalf("expected the remembered key to follow the rotated hash")
+	}
+}
 
 func TestAuthenticateManagementKey_LocalhostIPBan_BlocksCorrectKeyDuringBan(t *testing.T) {
 	h := &Handler{

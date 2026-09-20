@@ -4,6 +4,7 @@ package management
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -50,6 +52,7 @@ type Handler struct {
 	authManager             *coreauth.Manager
 	tokenStore              coreauth.Store
 	localPassword           string
+	verifiedKey             atomic.Pointer[verifiedManagementKey]
 	allowRemoteOverride     bool
 	envSecret               string
 	logDir                  string
@@ -298,6 +301,23 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
+// verifiedManagementKey remembers the last key that passed the bcrypt check,
+// bound to the hash it was checked against. The manager panel presents the
+// same key several times a second, and each bcrypt comparison costs ~60ms of
+// CPU; a match here skips it. A key rotation changes the hash and misses.
+type verifiedManagementKey struct {
+	secretHash string
+	keySum     [sha256.Size]byte
+}
+
+func (h *Handler) isVerifiedManagementKey(secretHash string, keySum [sha256.Size]byte) bool {
+	cached := h.verifiedKey.Load()
+	if cached == nil || cached.secretHash != secretHash {
+		return false
+	}
+	return subtle.ConstantTimeCompare(cached.keySum[:], keySum[:]) == 1
+}
+
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
@@ -387,9 +407,17 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return true, 0, ""
 	}
 
-	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+	if secretHash == "" {
 		fail()
 		return false, http.StatusUnauthorized, "invalid management key"
+	}
+	keySum := sha256.Sum256([]byte(provided))
+	if !h.isVerifiedManagementKey(secretHash, keySum) {
+		if bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
+			fail()
+			return false, http.StatusUnauthorized, "invalid management key"
+		}
+		h.verifiedKey.Store(&verifiedManagementKey{secretHash: secretHash, keySum: keySum})
 	}
 
 	reset()
