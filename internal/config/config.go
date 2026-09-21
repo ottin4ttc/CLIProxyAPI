@@ -25,6 +25,15 @@ type Config struct {
 	// CredentialInFlight configures credential observation snapshots.
 	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
 
+	// CredentialMaxInFlight caps how many requests a single upstream credential
+	// may serve at the same time, keyed by provider (for example codex: 1). A
+	// credential at its cap is skipped and the request rotates to the next one;
+	// when every candidate is busy the client receives 429 with Retry-After
+	// instead of the traffic reaching an upstream account. An absent or <= 0
+	// value leaves that provider unlimited. Ignored in Home mode, where Home
+	// owns credential admission.
+	CredentialMaxInFlight map[string]int `yaml:"credential-max-inflight" json:"credential-max-inflight"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 

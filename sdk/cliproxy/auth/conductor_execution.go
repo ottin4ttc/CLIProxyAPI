@@ -503,6 +503,14 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 	}
 	attempted := make(map[string]struct{})
+	// releaseInFlight frees the credential slot reserved for the current
+	// attempt; it is called before the next pick and when the function returns.
+	var releaseInFlight func()
+	defer func() {
+		if releaseInFlight != nil {
+			releaseInFlight()
+		}
+	}()
 	var lastErr error
 	var upstreamErr error
 	for {
@@ -525,6 +533,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
+
+		if releaseInFlight != nil {
+			releaseInFlight()
+			releaseInFlight = nil
+		}
+		release, admitted := m.acquireCredentialInFlight(auth, provider)
+		if !admitted {
+			tried[auth.ID] = struct{}{}
+			lastErr = newCredentialInFlightExceededError()
+			continue
+		}
+		releaseInFlight = release
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
@@ -938,6 +958,14 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	lastHomeAuthID := ""
 	homeSameAuthRetryPending := false
 	attempted := make(map[string]struct{})
+	// releaseInFlight frees the credential slot reserved for the current
+	// attempt; a started stream hands it to the stream wrapper instead.
+	var releaseInFlight func()
+	defer func() {
+		if releaseInFlight != nil {
+			releaseInFlight()
+		}
+	}()
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
@@ -1040,6 +1068,18 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				}
 			}
 		}
+
+		if releaseInFlight != nil {
+			releaseInFlight()
+			releaseInFlight = nil
+		}
+		release, admitted := m.acquireCredentialInFlight(auth, provider)
+		if !admitted {
+			tried[auth.ID] = struct{}{}
+			lastErr = newCredentialInFlightExceededError()
+			continue
+		}
+		releaseInFlight = release
 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
@@ -1236,6 +1276,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				return wrapHomeStream(ctx, streamResult, nil, releaseAttempt), nil
 			}
 			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
+		}
+		if releaseInFlight != nil {
+			streamResult = wrapHomeStream(ctx, streamResult, nil, releaseInFlight)
+			releaseInFlight = nil
 		}
 		return streamResult, nil
 	}
