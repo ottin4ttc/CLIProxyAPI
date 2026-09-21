@@ -1363,13 +1363,6 @@ func (m *Manager) shouldRetryAfterErrorFull(ctx context.Context, opts cliproxyex
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
-	// A model-wide upstream overload is not fixed by another credential, so a
-	// request that can fall back to a lower tier rotates exactly once and then
-	// stops, leaving the caller free to switch models. Requests that cannot
-	// fall back keep the original unbounded rotation.
-	if fallbackEligible && attempt >= 1 && failureCauseFromError(err) == FailureCauseOverload {
-		return 0, false
-	}
 	if m.HomeEnabled() {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
