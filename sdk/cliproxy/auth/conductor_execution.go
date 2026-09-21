@@ -511,6 +511,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			releaseInFlight()
 		}
 	}()
+	// busySkipped holds credentials passed over because they were at their
+	// in-flight cap; busyWake fires when any slot frees so they can be retried.
+	busySkipped := make(map[string]struct{})
+	var busyWake <-chan struct{}
 	var lastErr error
 	var upstreamErr error
 	for {
@@ -528,6 +532,17 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
+			if busyWake != nil {
+				if errWait := waitCredentialInFlight(ctx, busyWake, len(busySkipped)); errWait != nil {
+					return cliproxyexecutor.Response{}, errWait
+				}
+				for authID := range busySkipped {
+					delete(tried, authID)
+				}
+				clear(busySkipped)
+				busyWake = nil
+				continue
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -538,10 +553,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			releaseInFlight()
 			releaseInFlight = nil
 		}
-		release, admitted := m.acquireCredentialInFlight(auth, provider)
+		release, wake, admitted := m.acquireCredentialInFlight(auth, provider)
 		if !admitted {
 			tried[auth.ID] = struct{}{}
-			lastErr = newCredentialInFlightExceededError()
+			busySkipped[auth.ID] = struct{}{}
+			if busyWake == nil {
+				busyWake = wake
+			}
 			continue
 		}
 		releaseInFlight = release
@@ -966,6 +984,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			releaseInFlight()
 		}
 	}()
+	// busySkipped holds credentials passed over because they were at their
+	// in-flight cap; busyWake fires when any slot frees so they can be retried.
+	busySkipped := make(map[string]struct{})
+	var busyWake <-chan struct{}
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
@@ -1004,6 +1026,17 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		}
 		if errPick != nil {
+			if busyWake != nil {
+				if errWait := waitCredentialInFlight(ctx, busyWake, len(busySkipped)); errWait != nil {
+					return nil, errWait
+				}
+				for authID := range busySkipped {
+					delete(tried, authID)
+				}
+				clear(busySkipped)
+				busyWake = nil
+				continue
+			}
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if homeMode && lastErr != nil && errors.As(errPick, &homeCooldown) && homeCooldown != nil {
@@ -1073,10 +1106,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			releaseInFlight()
 			releaseInFlight = nil
 		}
-		release, admitted := m.acquireCredentialInFlight(auth, provider)
+		release, wake, admitted := m.acquireCredentialInFlight(auth, provider)
 		if !admitted {
 			tried[auth.ID] = struct{}{}
-			lastErr = newCredentialInFlightExceededError()
+			busySkipped[auth.ID] = struct{}{}
+			if busyWake == nil {
+				busyWake = wake
+			}
 			continue
 		}
 		releaseInFlight = release

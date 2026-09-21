@@ -239,8 +239,9 @@ max-retry-credentials: 0
 
 # Optional: cap how many requests a single upstream credential may serve at the
 # same time, keyed by provider. A credential at its cap is skipped and the
-# request rotates to the next one; when every candidate is busy the client gets
-# 429 with Retry-After and the traffic never reaches an upstream account. An
+# request rotates to the next one; when every candidate is busy the request
+# waits for a slot to free (or the client to disconnect) and selects again, so
+# the burst queues at the proxy instead of reaching an upstream account. An
 # absent or 0 value leaves that provider unlimited. Ignored in Home mode, where
 # Home owns credential admission.
 # credential-max-inflight:

@@ -1,39 +1,37 @@
 package auth
 
 import (
-	"net/http"
+	"context"
 	"strings"
 	"sync"
-	"time"
 )
 
-// credentialInFlightRetryAfter is the Retry-After advertised when every
-// candidate credential is at its in-flight cap. Slots free up as soon as a
-// running request ends, so a short hint keeps clients from backing off longer
-// than the wait usually is.
-const credentialInFlightRetryAfter = time.Second
-
 // credentialInFlightLimiter counts requests currently executing per
-// credential.
+// credential and lets callers wait for the next release.
 type credentialInFlightLimiter struct {
 	mu     sync.Mutex
 	active map[string]int
+	// wake is closed and replaced on every release so a refused caller can
+	// block until any slot frees.
+	wake chan struct{}
 }
 
 func newCredentialInFlightLimiter() *credentialInFlightLimiter {
-	return &credentialInFlightLimiter{active: make(map[string]int)}
+	return &credentialInFlightLimiter{active: make(map[string]int), wake: make(chan struct{})}
 }
 
-// Acquire reserves one slot for authID while fewer than limit are active. The
-// returned release function is idempotent and nil when the slot was refused.
-func (l *credentialInFlightLimiter) Acquire(authID string, limit int) (func(), bool) {
+// Acquire reserves one slot for authID while fewer than limit are active. On
+// success it returns an idempotent release function; on refusal it returns
+// the channel that closes at the next release anywhere in the limiter, so
+// the caller can wait without missing a release that lands in between.
+func (l *credentialInFlightLimiter) Acquire(authID string, limit int) (func(), <-chan struct{}, bool) {
 	if l == nil || limit <= 0 {
-		return nil, true
+		return nil, nil, true
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.active[authID] >= limit {
-		return nil, false
+		return nil, l.wake, false
 	}
 	l.active[authID]++
 	var once sync.Once
@@ -43,11 +41,13 @@ func (l *credentialInFlightLimiter) Acquire(authID string, limit int) (func(), b
 			defer l.mu.Unlock()
 			if l.active[authID] <= 1 {
 				delete(l.active, authID)
-				return
+			} else {
+				l.active[authID]--
 			}
-			l.active[authID]--
+			close(l.wake)
+			l.wake = make(chan struct{})
 		})
-	}, true
+	}, nil, true
 }
 
 // Active reports how many requests authID is currently serving.
@@ -86,28 +86,33 @@ func (m *Manager) credentialInFlightLimit(provider string) int {
 
 // acquireCredentialInFlight reserves an execution slot on auth under the
 // provider's in-flight cap. It reports whether the request may be dispatched
-// to auth; the release function is nil when no cap applies.
-func (m *Manager) acquireCredentialInFlight(auth *Auth, provider string) (func(), bool) {
+// to auth; the release function is nil when no cap applies, and the wake
+// channel is only set when the slot was refused.
+func (m *Manager) acquireCredentialInFlight(auth *Auth, provider string) (func(), <-chan struct{}, bool) {
 	if m == nil || auth == nil {
-		return nil, true
+		return nil, nil, true
 	}
 	limit := m.credentialInFlightLimit(provider)
 	if limit <= 0 {
-		return nil, true
+		return nil, nil, true
 	}
 	return m.credentialInFlight.Acquire(auth.ID, limit)
 }
 
-// newCredentialInFlightExceededError is returned when every otherwise
-// available credential is at its in-flight cap: the request is rejected at
-// the proxy instead of reaching an upstream account. It reuses the concurrency
-// busy error shape so the existing Retry-After plumbing and the no-wait-retry
-// short circuit in shouldRetryAfterError both apply.
-func newCredentialInFlightExceededError() error {
-	return newHomeConcurrencyBusyError(&Error{
-		Code:       "credential_inflight_exceeded",
-		Message:    "credential in-flight limit exceeded",
-		Retryable:  true,
-		HTTPStatus: http.StatusTooManyRequests,
-	}, credentialInFlightRetryAfter)
+// waitCredentialInFlight blocks until wake fires (a slot was released) or the
+// request context ends. It is the only place a request waits on the cap: the
+// request has not reached an upstream yet, so this is credential acquisition
+// time, not an upstream timeout.
+func waitCredentialInFlight(ctx context.Context, wake <-chan struct{}, busyCount int) error {
+	logEntryWithRequestID(ctx).Debugf("all %d candidate credentials at in-flight cap, waiting for a slot", busyCount)
+	if ctx == nil {
+		<-wake
+		return nil
+	}
+	select {
+	case <-wake:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
