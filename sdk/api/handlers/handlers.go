@@ -193,6 +193,13 @@ func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 	return cfg != nil && cfg.PassthroughHeaders
 }
 
+// executionPassthroughHeaders keeps client responses behind passthrough-headers while
+// plugin-host internal executions always receive filtered upstream headers.
+func executionPassthroughHeaders(cfg *config.SDKConfig, internal bool) bool {
+	return internal || PassthroughHeadersEnabled(cfg)
+}
+
+// cfg stays on the signature for the Codex bucket lookup below, which upstream does not have.
 func requestExecutionMetadata(ctx context.Context, cfg *config.SDKConfig) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// Only include it if the client explicitly provides it.

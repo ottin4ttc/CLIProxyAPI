@@ -14,24 +14,22 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-type responsesToolIdentity struct {
-	name      string
-	namespace string
-}
-
 type oaiToResponsesStateReasoning struct {
 	ReasoningID   string
 	ReasoningData string
 	OutputIndex   int
 }
 type oaiToResponsesState struct {
-	Seq              int
-	ResponseID       string
-	Created          int64
-	Started          bool
-	CompletedEmitted bool
-	ReasoningID      string
-	ReasoningIndex   int
+	RequestJSON        []byte
+	ToolIndex          *responsesToolIndex
+	RequestInitialized bool
+	Seq                int
+	ResponseID         string
+	Created            int64
+	Started            bool
+	CompletedEmitted   bool
+	ReasoningID        string
+	ReasoningIndex     int
 	// aggregation buffers for response.output
 	// Per-output message text buffers by index
 	MsgTextBuf   map[int]*strings.Builder
@@ -56,15 +54,7 @@ type oaiToResponsesState struct {
 	// names of freeform ("custom") tools from the original request; calls to
 	// these are emitted as custom_tool_call items instead of function_call
 	CustomToolNames map[string]struct{}
-	// RequestJSON is the request the tool identities resolve against, picked
-	// once per stream: validating the request on every chunk was the proxy's
-	// top CPU consumer, since it carries the whole conversation history.
-	// ToolNames and ToolIdentities memoize the lookups against it, each of
-	// which walks the request's tool declarations.
-	RequestJSON    []byte
-	ToolNames      map[string]string
-	ToolIdentities map[string]responsesToolIdentity
-	FinishReason   string
+	FinishReason    string
 	// usage aggregation
 	PromptTokens     int64
 	CachedTokens     int64
@@ -226,7 +216,7 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, requestRawJSON []byte
 				item, _ = sjson.SetBytes(item, "status", toolStatus)
 				item, _ = sjson.SetBytes(item, "input", unwrapCustomToolInput(args))
 				item, _ = sjson.SetBytes(item, "call_id", callID)
-				item = applyResponsesFunctionCallNamespaceFields(item, requestRawJSON, name, "")
+				item = st.ToolIndex.applyIdentity(item, name, "")
 				outputItems = append(outputItems, completedOutputItem{index: st.FuncOutputIx[key], raw: item})
 				continue
 			}
@@ -235,7 +225,7 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, requestRawJSON []byte
 			item, _ = sjson.SetBytes(item, "status", toolStatus)
 			item, _ = translatorcommon.SetStringWithoutHTMLEscape(item, "arguments", args)
 			item, _ = sjson.SetBytes(item, "call_id", callID)
-			item = applyResponsesFunctionCallNamespaceFields(item, requestRawJSON, name, "")
+			item = st.ToolIndex.applyIdentity(item, name, "")
 			outputItems = append(outputItems, completedOutputItem{index: st.FuncOutputIx[key], raw: item})
 		}
 	}
@@ -282,8 +272,6 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			FuncItemCustom:  make(map[string]bool),
 			FuncArgsDone:    make(map[string]bool),
 			FuncItemDone:    make(map[string]bool),
-			ToolNames:       make(map[string]string),
-			ToolIdentities:  make(map[string]responsesToolIdentity),
 			Reasonings:      make([]oaiToResponsesStateReasoning, 0),
 		}
 	}
@@ -297,8 +285,10 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 	if len(rawJSON) == 0 {
 		return [][]byte{}
 	}
-	if !st.Started {
+	if !st.RequestInitialized {
 		st.RequestJSON = pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+		st.ToolIndex = newResponsesToolIndex(gjson.ParseBytes(st.RequestJSON))
+		st.RequestInitialized = true
 	}
 	requestForNamespace := st.RequestJSON
 	isDone := bytes.Equal(rawJSON, []byte("[DONE]"))
@@ -347,22 +337,6 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 	}
 
 	nextSeq := func() int { st.Seq++; return st.Seq }
-	canonicalToolName := func(name string) string {
-		if resolved, ok := st.ToolNames[name]; ok {
-			return resolved
-		}
-		resolved := canonicalResponsesToolName(requestForNamespace, name)
-		st.ToolNames[name] = resolved
-		return resolved
-	}
-	applyToolIdentity := func(item []byte, qualifiedName string, itemPath string) []byte {
-		identity, ok := st.ToolIdentities[qualifiedName]
-		if !ok {
-			identity.name, identity.namespace = splitResponsesQualifiedFunctionCallFromRequest(requestForNamespace, qualifiedName)
-			st.ToolIdentities[qualifiedName] = identity
-		}
-		return translatorcommon.SetResponsesToolCallIdentity(item, identity.name, identity.namespace, itemPath)
-	}
 	allocOutputIndex := func() int {
 		ix := st.NextOutputIx
 		st.NextOutputIx++
@@ -375,13 +349,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			return
 		}
 		callID := st.FuncCallIDs[key]
-		name := canonicalToolName(st.FuncNames[key])
+		name := st.ToolIndex.canonicalName(st.FuncNames[key])
 		st.FuncNames[key] = name
 		if !force && (callID == "" || name == "") {
 			return
 		}
 		if name == "" {
-			if customToolName, ok := responsesSingleCustomToolName(requestForNamespace); ok {
+			if customToolName, ok := st.ToolIndex.singleCustomName(); ok {
 				name = customToolName
 				st.FuncNames[key] = customToolName
 			}
@@ -400,7 +374,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			o, _ = sjson.SetBytes(o, "output_index", outputIndex)
 			o, _ = sjson.SetBytes(o, "item.id", fmt.Sprintf("ctc_%s", callID))
 			o, _ = sjson.SetBytes(o, "item.call_id", callID)
-			o = applyToolIdentity(o, name, "item")
+			o = st.ToolIndex.applyIdentity(o, name, "item")
 			out = append(out, emitRespEvent("response.output_item.added", o))
 		} else {
 			o := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
@@ -408,7 +382,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			o, _ = sjson.SetBytes(o, "output_index", outputIndex)
 			o, _ = sjson.SetBytes(o, "item.id", fmt.Sprintf("fc_%s", callID))
 			o, _ = sjson.SetBytes(o, "item.call_id", callID)
-			o = applyToolIdentity(o, name, "item")
+			o = st.ToolIndex.applyIdentity(o, name, "item")
 			out = append(out, emitRespEvent("response.output_item.added", o))
 		}
 		st.FuncItemAdded[key] = true
@@ -455,9 +429,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		st.FuncItemCustom = make(map[string]bool)
 		st.FuncArgsDone = make(map[string]bool)
 		st.FuncItemDone = make(map[string]bool)
-		st.ToolNames = make(map[string]string)
-		st.ToolIdentities = make(map[string]responsesToolIdentity)
-		st.CustomToolNames = responsesCustomToolNames(requestForNamespace)
+		st.CustomToolNames = st.ToolIndex.custom
 		st.PromptTokens = 0
 		st.CachedTokens = 0
 		st.CompletionTokens = 0
@@ -635,7 +607,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 				itemDone, _ = sjson.SetBytes(itemDone, "item.status", toolStatus)
 				itemDone, _ = sjson.SetBytes(itemDone, "item.input", input)
 				itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", callID)
-				itemDone = applyToolIdentity(itemDone, st.FuncNames[key], "item")
+				itemDone = st.ToolIndex.applyIdentity(itemDone, st.FuncNames[key], "item")
 				out = append(out, emitRespEvent("response.output_item.done", itemDone))
 				st.FuncItemDone[key] = true
 				st.FuncArgsDone[key] = true
@@ -655,7 +627,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			itemDone, _ = sjson.SetBytes(itemDone, "item.status", toolStatus)
 			itemDone, _ = translatorcommon.SetStringWithoutHTMLEscape(itemDone, "item.arguments", args)
 			itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", callID)
-			itemDone = applyToolIdentity(itemDone, st.FuncNames[key], "item")
+			itemDone = st.ToolIndex.applyIdentity(itemDone, st.FuncNames[key], "item")
 			out = append(out, emitRespEvent("response.output_item.done", itemDone))
 			st.FuncItemDone[key] = true
 			st.FuncArgsDone[key] = true
@@ -816,6 +788,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	root := gjson.ParseBytes(rawJSON)
 	requestForNamespace := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+	toolIndex := newResponsesToolIndex(gjson.ParseBytes(requestForNamespace))
 
 	finishReason := root.Get("choices.0.finish_reason").String()
 	incompleteDetails, isIncomplete := incompleteByFinishReason(finishReason)
@@ -967,7 +940,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 
 				// Function/tool calls
 				if tcs := msg.Get("tool_calls"); tcs.Exists() && tcs.IsArray() {
-					customToolNames := responsesCustomToolNames(requestForNamespace)
+					customToolNames := toolIndex.custom
 					tcs.ForEach(func(tcIndex, tc gjson.Result) bool {
 						callID := tc.Get("id").String()
 						if callID == "" {
@@ -975,7 +948,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 							// function_call item stays usable for Codex round-trips.
 							callID = fmt.Sprintf("call_%s_%d_%d", id, choice.Get("index").Int(), tcIndex.Int())
 						}
-						name := canonicalResponsesToolName(requestForNamespace, tc.Get("function.name").String())
+						name := toolIndex.canonicalName(tc.Get("function.name").String())
 						args := tc.Get("function.arguments").String()
 						toolStatus := "completed"
 						if isIncomplete {
@@ -987,7 +960,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 							item, _ = sjson.SetBytes(item, "status", toolStatus)
 							item, _ = sjson.SetBytes(item, "input", unwrapCustomToolInput(args))
 							item, _ = sjson.SetBytes(item, "call_id", callID)
-							item = applyResponsesFunctionCallNamespaceFields(item, requestForNamespace, name, "")
+							item = toolIndex.applyIdentity(item, name, "")
 							outputItems = append(outputItems, item)
 							return true
 						}
@@ -996,7 +969,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 						item, _ = sjson.SetBytes(item, "status", toolStatus)
 						item, _ = translatorcommon.SetStringWithoutHTMLEscape(item, "arguments", args)
 						item, _ = sjson.SetBytes(item, "call_id", callID)
-						item = applyResponsesFunctionCallNamespaceFields(item, requestForNamespace, name, "")
+						item = toolIndex.applyIdentity(item, name, "")
 						outputItems = append(outputItems, item)
 						return true
 					})

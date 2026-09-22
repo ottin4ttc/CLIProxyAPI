@@ -726,11 +726,11 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ResolvesToolIdent
 	if !bytes.Equal(st.RequestJSON, originalRequest) {
 		t.Fatalf("expected the stream to keep the request picked on the first chunk")
 	}
-	if _, ok := st.ToolNames["mcp__test_mcp__add_numbers"]; !ok {
-		t.Fatalf("expected the canonical tool name to be memoized")
+	if st.ToolIndex == nil || !st.RequestInitialized {
+		t.Fatalf("expected the tool index to be built once on the first chunk")
 	}
-	if identity, ok := st.ToolIdentities["mcp__test_mcp__add_numbers"]; !ok || identity.name != "add_numbers" || identity.namespace != "mcp__test_mcp__" {
-		t.Fatalf("expected the tool identity to be memoized, got %+v (present=%t)", identity, ok)
+	if got := st.ToolIndex.canonicalName("mcp__test_mcp__add_numbers"); got != "mcp__test_mcp__add_numbers" {
+		t.Fatalf("canonicalName = %q, want the qualified name to resolve against the picked request", got)
 	}
 }
 
