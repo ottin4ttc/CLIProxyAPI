@@ -786,6 +786,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
 		auth.recordRecentRequest(now, result.Success, resultIsOverload(result))
+		auth.observePoolMarker(result.Provider, responseHeaders, now)
 		if result.Success {
 			auth.Success++
 		} else {
@@ -1103,6 +1104,7 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
 		auth.recordRecentRequest(now, result.Success, resultIsOverload(result))
+		auth.observePoolMarker(result.Provider, internallogging.GetResponseHeaders(ctx), now)
 		if result.Success {
 			auth.Success++
 		} else {

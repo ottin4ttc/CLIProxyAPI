@@ -89,6 +89,9 @@ type HealthWeightedRoundRobinSelector struct {
 	states    map[string]*smoothWeightedState
 	lastTiers map[string]int64
 	maxKeys   int
+	// PoolMarkerWeighting also scales weights by the upstream serving pool
+	// observed in responses. Off by default; see pool_marker.go.
+	PoolMarkerWeighting bool
 	// nowFn overrides time.Now in tests.
 	nowFn func() time.Time
 }
@@ -163,7 +166,15 @@ func (s *HealthWeightedRoundRobinSelector) Pick(ctx context.Context, provider, m
 			s.lastTiers[auth.ID] = guarded
 		}
 		if weight := authWeight(auth); weight > 0 {
-			weights[auth.ID] = weight * guarded
+			effective := weight * guarded
+			if s.PoolMarkerWeighting {
+				// The pool boost passes the same share guard as the health
+				// boost, so a credential already carrying more than its share
+				// of the window is not pushed further.
+				pool := applyShareGuard(auth.poolTier(now), stat.total, poolTotal, len(available))
+				effective = effective * pool / poolTierNeutral
+			}
+			weights[auth.ID] = effective
 		}
 	}
 

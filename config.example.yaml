@@ -441,6 +441,17 @@ codex:
   # than cooling down the entire credential across all sibling models.
   # Default: false
   model-level-cooling: false
+  # Prefer credentials that upstream is currently serving from its fast pool. Codex reports
+  # the pool that handled a turn in the X-Codex-Turn-State response header: the payload is
+  # opaque, but its length is stable per pool (292 bytes fast, 312 slow), and the fast pool
+  # answers with roughly half the TTFT. A credential needs three consecutive fast turns
+  # before the x2 boost applies, a single slow turn clears it, and the boost decays after
+  # 20 minutes without a fresh observation, because upstream reassigns pools on its own -
+  # usually daily, but a credential can flip back within minutes. The boost passes the same
+  # anti-avalanche share guard as the health boost, so a credential already carrying more
+  # than 3x its fair share of the window is not pushed further.
+  # Requires routing.strategy: health-weighted-round-robin. Default: false
+  pool-marker-weighting: false
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:

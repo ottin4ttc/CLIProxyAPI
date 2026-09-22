@@ -103,6 +103,7 @@ type Auth struct {
 	Failed  int64 `json:"-"`
 
 	recentRequests recentRequestRing `json:"-"`
+	poolMarker     poolMarkerState   `json:"-"`
 	indexAssigned  bool              `json:"-"`
 }
 

@@ -219,6 +219,10 @@ type CodexConfig struct {
 	// ModelLevelCooling scopes Codex usage_limit_reached quota cooldowns to the requested model
 	// rather than cooling down the entire credential across all sibling models.
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
+	// PoolMarkerWeighting lets health-weighted routing prefer credentials that upstream is
+	// currently serving from its fast pool, as reported by the X-Codex-Turn-State response
+	// header length. Requires routing.strategy: health-weighted-round-robin. Default is false.
+	PoolMarkerWeighting bool `yaml:"pool-marker-weighting" json:"pool-marker-weighting"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
 	// ResponseSteering enables full-duplex Codex WebSockets, bound to one

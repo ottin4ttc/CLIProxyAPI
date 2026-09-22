@@ -29,6 +29,7 @@ type routingRuntimeState struct {
 	sessionAffinity          bool
 	sessionAffinityTTL       time.Duration
 	sessionAffinitySubagents bool
+	poolMarkerWeighting      bool
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -49,6 +50,7 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
+	state.poolMarkerWeighting = cfg.Codex.PoolMarkerWeighting
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
 		if parsed, errParse := time.ParseDuration(ttl); errParse == nil && parsed > 0 {
@@ -70,7 +72,7 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	case "weighted-round-robin":
 		selector = &coreauth.WeightedRoundRobinSelector{}
 	case "health-weighted-round-robin":
-		selector = &coreauth.HealthWeightedRoundRobinSelector{}
+		selector = &coreauth.HealthWeightedRoundRobinSelector{PoolMarkerWeighting: state.poolMarkerWeighting}
 	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
 	default:
