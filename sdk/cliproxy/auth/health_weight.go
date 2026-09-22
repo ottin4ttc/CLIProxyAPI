@@ -85,10 +85,11 @@ func applyShareGuard(tier, total, poolTotal int64, poolSize int) int64 {
 // derived from its recent overload rate. Tiers are recomputed from completed
 // ring buckets only, so the weight vector is stable between bucket boundaries.
 type HealthWeightedRoundRobinSelector struct {
-	mu        sync.Mutex
-	states    map[string]*smoothWeightedState
-	lastTiers map[string]int64
-	maxKeys   int
+	mu            sync.Mutex
+	states        map[string]*smoothWeightedState
+	lastTiers     map[string]int64
+	lastPoolTiers map[string]int64
+	maxKeys       int
 	// PoolMarkerWeighting also scales weights by the upstream serving pool
 	// observed in responses. Off by default; see pool_marker.go.
 	PoolMarkerWeighting bool
@@ -138,6 +139,9 @@ func (s *HealthWeightedRoundRobinSelector) Pick(ctx context.Context, provider, m
 	if s.lastTiers == nil {
 		s.lastTiers = make(map[string]int64)
 	}
+	if s.lastPoolTiers == nil {
+		s.lastPoolTiers = make(map[string]int64)
+	}
 	limit := s.maxKeys
 	if limit <= 0 {
 		limit = 4096
@@ -171,7 +175,17 @@ func (s *HealthWeightedRoundRobinSelector) Pick(ctx context.Context, provider, m
 				// The pool boost passes the same share guard as the health
 				// boost, so a credential already carrying more than its share
 				// of the window is not pushed further.
-				pool := applyShareGuard(auth.poolTier(now), stat.total, poolTotal, len(available))
+				raw := auth.poolTier(now)
+				pool := applyShareGuard(raw, stat.total, poolTotal, len(available))
+				if last, seen := s.lastPoolTiers[auth.ID]; !seen || last != pool {
+					if pool != raw {
+						log.Infof("pool-marker: share guard | auth=%s window_total=%d pool_total=%d pool_size=%d tier %d->%d",
+							auth.ID, stat.total, poolTotal, len(available), raw, pool)
+					}
+					log.Infof("pool-marker: tier change | auth=%s %d->%d fast_streak=%d",
+						auth.ID, last, pool, auth.poolMarker.fastStreak)
+					s.lastPoolTiers[auth.ID] = pool
+				}
 				effective = effective * pool / poolTierNeutral
 			}
 			weights[auth.ID] = effective

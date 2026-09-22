@@ -91,6 +91,10 @@ func TestPoolTierDecaysAfterTTL(t *testing.T) {
 	if got := auth.poolTier(base.Add(poolMarkerTTL + time.Second)); got != poolTierNeutral {
 		t.Fatalf("poolTier past TTL = %d, want neutral %d", got, poolTierNeutral)
 	}
+	// PoolTier is what the management API reports; it must not diverge.
+	if got, want := auth.PoolTier(base), auth.poolTier(base); got != want {
+		t.Fatalf("PoolTier = %d, want %d", got, want)
+	}
 }
 
 func TestHealthWeightedSelectorPrefersFastPool(t *testing.T) {
