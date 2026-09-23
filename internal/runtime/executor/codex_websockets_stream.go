@@ -33,6 +33,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
+	// A capsule this instance can open is inlined as plain context. CPA ciphertext must
+	// never reach the upstream, which cannot decrypt it and rejects the whole request.
+	req.Payload = helps.NormalizeCPACompactionItems(ctx, req.Payload)
+	opts.OriginalRequest = helps.NormalizeCPACompactionItems(ctx, opts.OriginalRequest)
 	prepared, err := e.prepareCodexWebsocketStream(ctx, auth, req, opts)
 	if err != nil {
 		return nil, err
