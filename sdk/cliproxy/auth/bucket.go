@@ -2,6 +2,17 @@ package auth
 
 import "strings"
 
+// isBucketScopedProvider reports whether credentials of the provider are
+// partitioned by codex-buckets. Other providers ignore bucket tags.
+func isBucketScopedProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
 // authBucket returns the credential's bucket tag, or "" when unbucketed.
 // Attributes take precedence over raw auth-file metadata, mirroring authWeight.
 func authBucket(auth *Auth) string {

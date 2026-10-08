@@ -123,7 +123,7 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.disallowFreeAuth && isFreeCodexAuth(auth) {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") && authBucket(auth) != e.codexBucket {
+	if isBucketScopedProvider(auth.Provider) && authBucket(auth) != e.codexBucket {
 		return false
 	}
 	return true

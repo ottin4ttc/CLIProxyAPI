@@ -1000,6 +1000,53 @@ func TestManager_PickNextMixed_DisallowFreeAuthSkipsCodexFreePlan(t *testing.T) 
 	}
 }
 
+// A bucketed claude credential that shares a model with an unbucketed
+// provider must stay invisible to unmapped keys, which keep using the shared
+// provider instead of failing.
+func TestManager_PickNextMixed_ClaudeBucketIsolatedFromUnmappedKeys(t *testing.T) {
+	t.Parallel()
+
+	model := "claude-bucket-mixed-model"
+	registerSchedulerModels(t, "claude", model, "claude-team-a")
+	registerSchedulerModels(t, "antigravity", model, "antigravity-shared")
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["claude"] = schedulerTestExecutor{}
+	manager.executors["antigravity"] = schedulerTestExecutor{}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "claude-team-a", Provider: "claude", Metadata: map[string]any{AttributeBucket: "team-a"}}); errRegister != nil {
+		t.Fatalf("Register(claude-team-a) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "antigravity-shared", Provider: "antigravity"}); errRegister != nil {
+		t.Fatalf("Register(antigravity-shared) error = %v", errRegister)
+	}
+
+	providers := []string{"claude", "antigravity"}
+	for index := 0; index < 6; index++ {
+		got, _, _, errPick := manager.pickNextMixed(context.Background(), providers, model, cliproxyexecutor.Options{}, map[string]struct{}{})
+		if errPick != nil {
+			t.Fatalf("unmapped pickNextMixed() #%d error = %v", index, errPick)
+		}
+		if got == nil || got.ID != "antigravity-shared" {
+			t.Fatalf("unmapped pickNextMixed() #%d picked %#v, want antigravity-shared", index, got)
+		}
+	}
+
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.CodexBucketMetadataKey: "team-a"}}
+	sawClaude := false
+	for index := 0; index < 6; index++ {
+		got, _, _, errPick := manager.pickNextMixed(context.Background(), providers, model, opts, map[string]struct{}{})
+		if errPick != nil {
+			t.Fatalf("bucketed pickNextMixed() #%d error = %v", index, errPick)
+		}
+		if got != nil && got.ID == "claude-team-a" {
+			sawClaude = true
+		}
+	}
+	if !sawClaude {
+		t.Fatal("bucketed request never selected its own claude auth")
+	}
+}
+
 func TestManagerPluginSchedulerSelectsAuthID(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["gemini"] = schedulerTestExecutor{}

@@ -63,6 +63,31 @@ func TestEligibilityCodexBucket(t *testing.T) {
 	}
 }
 
+func TestEligibilityClaudeBucket(t *testing.T) {
+	claudeIn := &Auth{Provider: "claude", Metadata: map[string]any{AttributeBucket: "team-a"}}
+	claudeDefault := &Auth{Provider: "claude"}
+	antigravityTagged := &Auth{Provider: "antigravity", Metadata: map[string]any{AttributeBucket: "team-a"}}
+
+	bucketed := authSelectionEligibility{codexBucket: "team-a"}
+	if !bucketed.allows(claudeIn) {
+		t.Fatal("bucketed request must allow same-bucket claude auth")
+	}
+	if bucketed.allows(claudeDefault) {
+		t.Fatal("bucketed request must reject unbucketed claude auth")
+	}
+
+	unmapped := authSelectionEligibility{}
+	if unmapped.allows(claudeIn) {
+		t.Fatal("unmapped request must reject bucketed claude auth")
+	}
+	if !unmapped.allows(claudeDefault) {
+		t.Fatal("unmapped request must allow unbucketed claude auth")
+	}
+	if !unmapped.allows(antigravityTagged) {
+		t.Fatal("bucket tags must be ignored for providers that are not bucket-scoped")
+	}
+}
+
 func TestCodexBucketFromMetadata(t *testing.T) {
 	if got := codexBucketFromMetadata(nil); got != "" {
 		t.Fatalf("nil meta = %q, want empty", got)
