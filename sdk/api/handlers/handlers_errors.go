@@ -10,7 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"golang.org/x/net/context"
 )
 
@@ -111,6 +113,49 @@ func enrichAuthSelectionError(err error, providers []string, model string) error
 		return coreauth.WithCause(enriched, cause)
 	}
 	return enriched
+}
+
+// isNoUsableAuthError reports whether the auth manager failed because it found
+// no credential to try: none registered for the model, all disabled or out of
+// the bucket (auth_not_found / auth_unavailable), or all cooling down
+// (model_cooldown). Such a failure is decided before any upstream call.
+func isNoUsableAuthError(err error) bool {
+	type modelCooldownMarker interface {
+		IsModelCooldown() bool
+	}
+	var mcm modelCooldownMarker
+	if errors.As(err, &mcm) && mcm != nil && mcm.IsModelCooldown() {
+		return true
+	}
+	return isAuthSelectionUnavailable(err)
+}
+
+// preUpstreamFailure carries the status a client received for a request that
+// failed before any upstream attempt, so failFromErrors records that status.
+type preUpstreamFailure struct {
+	status int
+	err    error
+}
+
+func (e preUpstreamFailure) Error() string   { return e.err.Error() }
+func (e preUpstreamFailure) StatusCode() int { return e.status }
+
+// publishPreUpstreamFailure emits a failed usage record for a request that
+// ended before any upstream attempt published one: a model the proxy cannot
+// route or the client key may not use, or an auth selection that found no
+// usable credential. Those requests never reach an executor UsageReporter, so
+// without this record the usage database never sees them — the 503s clients
+// receive while every credential for their model is cooling down were
+// invisible to the business error rate. The record is skipped when tracker
+// shows an attempt of this request already published one (that attempt is the
+// request's real outcome), and for internal executions, which the plugin
+// executor path does not report either.
+func publishPreUpstreamFailure(ctx context.Context, providers []string, model string, tracker *coreusage.PublishTracker, errMsg *interfaces.ErrorMessage, internal bool) {
+	if internal || errMsg == nil || errMsg.Error == nil || tracker.Published() {
+		return
+	}
+	reporter := helps.NewUsageReporter(ctx, strings.Join(providers, ","), model, nil)
+	reporter.PublishFailure(ctx, preUpstreamFailure{status: errMsg.StatusCode, err: errMsg.Error})
 }
 
 // WriteErrorResponse writes an error message to the response writer using the HTTP status embedded in the message.

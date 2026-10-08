@@ -47,6 +47,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
 	if errMsg := modelAccessError(ctx, h.Cfg, originalRequestedModel); errMsg != nil {
+		publishPreUpstreamFailure(ctx, nil, originalRequestedModel, nil, errMsg, execOptions.InternalSource)
 		return nil, nil, errMsg
 	}
 	// Speech-only models are reachable solely through the speech entry protocol.
@@ -61,6 +62,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
+		publishPreUpstreamFailure(ctx, nil, originalRequestedModel, nil, errMsg, execOptions.InternalSource)
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
@@ -105,10 +107,15 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, interceptErr
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	ctx, publishTracker := coreusage.WithPublishTracker(ctx)
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
+		noUsableAuth := isNoUsableAuthError(err)
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
+		if noUsableAuth {
+			publishPreUpstreamFailure(ctx, providers, originalRequestedModel, publishTracker, errMsg, execOptions.InternalSource)
+		}
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
