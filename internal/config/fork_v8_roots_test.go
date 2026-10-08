@@ -32,6 +32,10 @@ codex-bucket-model-routes:
 credential-max-inflight:
   codex: 1
 save-health-ring: true
+conversation-store:
+  enabled: true
+  data-dir: /tmp/convstore
+  retention-days: 7
 `
 
 func TestForkRootsDoNotMarkLegacyConfigAsV8(t *testing.T) {
@@ -56,6 +60,20 @@ func TestV8MigrationKeepsForkRoots(t *testing.T) {
 	}
 	if errValidate := ValidateV8Config(migrated); errValidate != nil {
 		t.Fatalf("validate migrated config: %v", errValidate)
+	}
+
+	var raw struct {
+		ConversationStore struct {
+			Enabled       bool   `yaml:"enabled"`
+			DataDir       string `yaml:"data-dir"`
+			RetentionDays int    `yaml:"retention-days"`
+		} `yaml:"conversation-store"`
+	}
+	if errUnmarshal := yaml.Unmarshal(migrated, &raw); errUnmarshal != nil {
+		t.Fatalf("decode raw migrated config: %v", errUnmarshal)
+	}
+	if store := raw.ConversationStore; !store.Enabled || store.DataDir != "/tmp/convstore" || store.RetentionDays != 7 {
+		t.Fatalf("conversation-store = %+v", store)
 	}
 
 	var cfg Config

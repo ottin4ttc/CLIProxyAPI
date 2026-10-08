@@ -899,6 +899,9 @@ func ValidateV8Config(data []byte) error {
 		}
 	}
 	deleteYAMLPath(flat, "config-version")
+	for _, section := range forkExternalConfigRoots {
+		deleteYAMLPath(flat, section)
+	}
 	// Empty struct containers are valid replacements. Only strip known structural
 	// paths; empty user maps (headers, aliases, plugin options) carry real values.
 	for _, path := range v8Paths {

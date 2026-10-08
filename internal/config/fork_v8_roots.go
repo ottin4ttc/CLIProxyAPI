@@ -10,4 +10,9 @@ var forkConfigRoots = []string{
 	"codex-bucket-model-routes",
 	"credential-max-inflight",
 	"save-health-ring",
+	"conversation-store",
 }
+
+// forkExternalConfigRoots are fork roots read straight from the config file
+// instead of being decoded into Config, so strict v8 validation skips them.
+var forkExternalConfigRoots = []string{"conversation-store"}
