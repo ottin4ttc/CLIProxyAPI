@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeylimit"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/throttlereport"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/apikeylimit"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/throttlereport"
 )
 
 // responsesWebsocketRPMDecision reports whether the next generation dispatch

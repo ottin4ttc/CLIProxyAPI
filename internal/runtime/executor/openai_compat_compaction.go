@@ -6,13 +6,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -236,13 +236,13 @@ func openAICompatCompactionUsage(payload []byte) (inputTokens, outputTokens, tot
 	return inputTokens, outputTokens, totalTokens
 }
 
-func (e *OpenAICompatExecutor) shouldSynthesizeResponsesCompaction(auth *cliproxyauth.Auth) bool {
-	compat := e.responsesCompactionConfig(auth)
+func (e *OpenAICompatExecutor) shouldSynthesizeResponsesCompaction(auth *cliproxyauth.Auth, req cliproxyexecutor.Request) bool {
+	compat := e.responsesCompactionConfig(auth, req)
 	return compat != nil && compat.SynthesizeResponsesCompaction
 }
 
-func (e *OpenAICompatExecutor) responsesCompactionConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
-	if compat := e.resolveCompatConfig(auth); compat != nil {
+func (e *OpenAICompatExecutor) responsesCompactionConfig(auth *cliproxyauth.Auth, req cliproxyexecutor.Request) *config.OpenAICompatibility {
+	if compat := e.resolveCompatConfig(auth, req); compat != nil {
 		return compat
 	}
 	if e.cfg == nil {
