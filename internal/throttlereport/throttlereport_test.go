@@ -179,3 +179,65 @@ func TestRequestClientIPNilRequest(t *testing.T) {
 		t.Fatalf("RequestClientIP(nil) = %q, want empty", got)
 	}
 }
+
+func TestPublishAuthFailureMasksPresentedKey(t *testing.T) {
+	captured := make(chan usage.Record, 4)
+	usage.RegisterNamedPlugin("throttlereport-auth-test", usagePluginFunc(func(_ context.Context, r usage.Record) {
+		captured <- r
+	}))
+	defer usage.RegisterNamedPlugin("throttlereport-auth-test", usagePluginFunc(func(context.Context, usage.Record) {}))
+
+	const secret = "bce-v3/ALTAK-secretpart/0123456789abcdef94ea"
+	c := newThrottleTestContext(http.MethodPost, "/v1/responses")
+	c.Request.Header.Set("Authorization", "Bearer "+secret)
+	PublishAuthFailure(c, http.StatusUnauthorized, "invalid_credential", "Invalid API key")
+
+	var record usage.Record
+	select {
+	case record = <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no usage record published for the rejected request")
+	}
+	if !record.Failed || record.Fail.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("record = failed %v status %d, want failed 401", record.Failed, record.Fail.StatusCode)
+	}
+	if record.APIKey != "bce-...94ea" {
+		t.Fatalf("record.APIKey = %q, want the masked key bce-...94ea", record.APIKey)
+	}
+	if !strings.Contains(record.Fail.Body, `"code":"invalid_credential"`) || !strings.Contains(record.Fail.Body, `"key":"bce-...94ea"`) {
+		t.Fatalf("record.Fail.Body = %q, want the auth error code and the masked key", record.Fail.Body)
+	}
+	if strings.Contains(record.APIKey+record.Fail.Body, "secretpart") {
+		t.Fatal("the presented key must never be forwarded unmasked")
+	}
+}
+
+func TestPresentedAPIKeyFollowsAccessProviderOrder(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(r *http.Request)
+		want  string
+	}{
+		{"bearer", func(r *http.Request) { r.Header.Set("Authorization", "Bearer sk-bearer") }, "sk-bearer"},
+		{"raw authorization", func(r *http.Request) { r.Header.Set("Authorization", "sk-raw") }, "sk-raw"},
+		{"x-api-key", func(r *http.Request) { r.Header.Set("X-Api-Key", "sk-anthropic") }, "sk-anthropic"},
+		{"x-goog-api-key before x-api-key", func(r *http.Request) {
+			r.Header.Set("X-Api-Key", "sk-anthropic")
+			r.Header.Set("X-Goog-Api-Key", "AIza-google")
+		}, "AIza-google"},
+		{"none", func(*http.Request) {}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			tc.setup(r)
+			if got := presentedAPIKey(r); got != tc.want {
+				t.Fatalf("presentedAPIKey = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent?key=AIza-query", nil)
+	if got := presentedAPIKey(r); got != "AIza-query" {
+		t.Fatalf("query key = %q, want AIza-query", got)
+	}
+}
