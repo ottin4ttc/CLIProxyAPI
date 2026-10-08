@@ -266,6 +266,9 @@ func rpmLimitExemptPath(method, path string) bool {
 	case strings.HasPrefix(path, "/v1beta/models/"):
 		// All Gemini generation on this prefix is POST; GET is metadata.
 		return true
+	case strings.HasPrefix(path, "/v1/models/"):
+		// Single-model detail lookup; metadata only.
+		return true
 	case strings.HasPrefix(path, "/v1/live/"):
 		return true
 	case strings.HasPrefix(path, "/v1/realtime/calls/"):

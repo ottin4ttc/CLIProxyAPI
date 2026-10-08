@@ -87,6 +87,7 @@ func TestRPMMiddlewareExemptPathsAreNotCounted(t *testing.T) {
 		{http.MethodGet, "/v1/models"},
 		{http.MethodGet, "/v1beta/models"},
 		{http.MethodGet, "/v1beta/models/gemini-3-pro"},
+		{http.MethodGet, "/v1/models/gpt-5.6-sol"},
 		{http.MethodPost, "/v1/messages/count_tokens"},
 		{http.MethodGet, "/v1/live/call-123"},
 		{http.MethodGet, "/v1/realtime"},
