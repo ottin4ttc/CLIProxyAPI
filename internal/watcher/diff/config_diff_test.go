@@ -741,14 +741,14 @@ func TestTrimStrings(t *testing.T) {
 	}
 }
 
-func TestBuildConfigChangeDetails_CodexBucketModelRoutes(t *testing.T) {
+func TestBuildConfigChangeDetails_BucketModelRoutes(t *testing.T) {
 	oldCfg := &config.Config{}
 	newCfg := &config.Config{}
-	newCfg.CodexBucketModelRoutes = config.CodexBucketModelRoutes{
+	newCfg.BucketModelRoutes = config.BucketModelRoutes{
 		Enabled: true,
-		Rules:   []config.CodexBucketModelRoute{{Bucket: "default", From: "gpt-5.6-sol", Provider: "antigravity", To: "gemini-3.8-flash-high"}},
+		Rules:   []config.BucketModelRoute{{Bucket: "default", From: "gpt-5.6-sol", Provider: "antigravity", To: "gemini-3.8-flash-high"}},
 	}
 
 	changes := BuildConfigChangeDetails(oldCfg, newCfg)
-	expectContains(t, changes, "codex-bucket-model-routes: enabled false -> true, rules 0 -> 1")
+	expectContains(t, changes, "bucket-model-routes: enabled false -> true, rules 0 -> 1")
 }

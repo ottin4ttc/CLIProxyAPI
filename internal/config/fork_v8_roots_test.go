@@ -9,7 +9,7 @@ import (
 
 const forkRootsLegacyConfig = `port: 8317
 api-keys: ["k1", "k2"]
-codex-buckets:
+buckets:
   anon:
     api-keys: ["k2"]
 api-key-limits:
@@ -22,7 +22,7 @@ model-access:
   rules:
     - models: ["deepseek-*"]
       api-keys: ["k1"]
-codex-bucket-model-routes:
+bucket-model-routes:
   enabled: true
   rules:
     - bucket: default
@@ -80,8 +80,8 @@ func TestV8MigrationKeepsForkRoots(t *testing.T) {
 	if errUnmarshal := yaml.Unmarshal(migrated, &cfg); errUnmarshal != nil {
 		t.Fatalf("decode migrated config: %v", errUnmarshal)
 	}
-	if got := cfg.CodexBuckets["anon"].APIKeys; len(got) != 1 || got[0] != "k2" {
-		t.Fatalf("codex-buckets.anon.api-keys = %v", got)
+	if got := cfg.Buckets["anon"].APIKeys; len(got) != 1 || got[0] != "k2" {
+		t.Fatalf("buckets.anon.api-keys = %v", got)
 	}
 	if cfg.APIKeyLimits.DefaultRPM != 60 || cfg.APIKeyLimits.Overrides["k1"] != 120 || len(cfg.APIKeyLimits.ExemptBuckets) != 1 {
 		t.Fatalf("api-key-limits = %+v", cfg.APIKeyLimits)
@@ -89,8 +89,8 @@ func TestV8MigrationKeepsForkRoots(t *testing.T) {
 	if !cfg.ModelAccess.Enabled || len(cfg.ModelAccess.Rules) != 1 {
 		t.Fatalf("model-access = %+v", cfg.ModelAccess)
 	}
-	if !cfg.CodexBucketModelRoutes.Enabled || len(cfg.CodexBucketModelRoutes.Rules) != 1 || cfg.CodexBucketModelRoutes.Rules[0].To != "gemini-3.8-flash-high" {
-		t.Fatalf("codex-bucket-model-routes = %+v", cfg.CodexBucketModelRoutes)
+	if !cfg.BucketModelRoutes.Enabled || len(cfg.BucketModelRoutes.Rules) != 1 || cfg.BucketModelRoutes.Rules[0].To != "gemini-3.8-flash-high" {
+		t.Fatalf("bucket-model-routes = %+v", cfg.BucketModelRoutes)
 	}
 	if cfg.CredentialMaxInFlight["codex"] != 1 {
 		t.Fatalf("credential-max-inflight = %v", cfg.CredentialMaxInFlight)

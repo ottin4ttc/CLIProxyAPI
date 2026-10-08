@@ -1839,11 +1839,11 @@ func disallowFreeAuthFromMetadata(meta map[string]any) bool {
 	}
 }
 
-func codexBucketFromMetadata(meta map[string]any) string {
+func bucketFromMetadata(meta map[string]any) string {
 	if len(meta) == 0 {
 		return ""
 	}
-	raw, ok := meta[cliproxyexecutor.CodexBucketMetadataKey]
+	raw, ok := meta[cliproxyexecutor.BucketMetadataKey]
 	if !ok || raw == nil {
 		return ""
 	}

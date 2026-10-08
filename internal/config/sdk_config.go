@@ -67,10 +67,11 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
-	// CodexBuckets maps bucket names to the client API keys assigned to them.
-	// A mapped key only uses codex credentials whose auth file carries the same
-	// top-level "bucket" value; unmapped keys only use unbucketed credentials.
-	CodexBuckets map[string]CodexBucket `yaml:"codex-buckets" json:"codex-buckets"`
+	// Buckets maps bucket names to the client API keys assigned to them.
+	// A mapped key only uses bucket-scoped (codex, claude) credentials whose
+	// auth file carries the same top-level "bucket" value; unmapped keys only
+	// use unbucketed credentials.
+	Buckets map[string]Bucket `yaml:"buckets" json:"buckets"`
 
 	// APIKeyLimits configures per-client-API-key request rate limits.
 	APIKeyLimits APIKeyLimits `yaml:"api-key-limits" json:"api-key-limits"`
@@ -78,9 +79,9 @@ type SDKConfig struct {
 	// ModelAccess restricts models matching a rule to that rule's client API keys.
 	ModelAccess ModelAccess `yaml:"model-access" json:"model-access"`
 
-	// CodexBucketModelRoutes rewrites a requested model to another provider's
-	// model for client API keys in a given codex bucket.
-	CodexBucketModelRoutes CodexBucketModelRoutes `yaml:"codex-bucket-model-routes" json:"codex-bucket-model-routes"`
+	// BucketModelRoutes rewrites a requested model to another provider's
+	// model for client API keys in a given bucket.
+	BucketModelRoutes BucketModelRoutes `yaml:"bucket-model-routes" json:"bucket-model-routes"`
 
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
@@ -116,22 +117,22 @@ type ClaudeCodeConfig struct {
 	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
 }
 
-// CodexBucket groups client API keys allowed to use codex credentials tagged
-// with the bucket's name.
-type CodexBucket struct {
+// Bucket groups client API keys allowed to use bucket-scoped credentials
+// tagged with the bucket's name.
+type Bucket struct {
 	// APIKeys lists the client API keys mapped to this bucket.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 }
 
-// CodexBucketForAPIKey returns the bucket name the client API key is mapped
+// BucketForAPIKey returns the bucket name the client API key is mapped
 // to, or the empty string when the key is unmapped. Configured keys are
-// trimmed before comparison (matching ValidateCodexBuckets); apiKey is
+// trimmed before comparison (matching ValidateBuckets); apiKey is
 // compared as-is since it comes directly from the caller's request.
-func (c *SDKConfig) CodexBucketForAPIKey(apiKey string) string {
+func (c *SDKConfig) BucketForAPIKey(apiKey string) string {
 	if c == nil || apiKey == "" {
 		return ""
 	}
-	for name, bucket := range c.CodexBuckets {
+	for name, bucket := range c.Buckets {
 		for _, key := range bucket.APIKeys {
 			if strings.TrimSpace(key) == apiKey {
 				return name
@@ -141,29 +142,29 @@ func (c *SDKConfig) CodexBucketForAPIKey(apiKey string) string {
 	return ""
 }
 
-// CodexBucketForContextValue resolves the codex bucket for a raw context
+// BucketForContextValue resolves the bucket for a raw context
 // value (typically a gin "userApiKey" context entry) by formatting it and
-// delegating to CodexBucketForAPIKey. It exists so every call site that
+// delegating to BucketForAPIKey. It exists so every call site that
 // reads the client API key out of request context (handlers, codex-only
 // side channels) shares one lookup implementation instead of re-deriving
 // it. Returns "" when v is nil or the key is unmapped.
-func (c *SDKConfig) CodexBucketForContextValue(v any) string {
+func (c *SDKConfig) BucketForContextValue(v any) string {
 	if c == nil || v == nil {
 		return ""
 	}
-	return c.CodexBucketForAPIKey(fmt.Sprint(v))
+	return c.BucketForAPIKey(fmt.Sprint(v))
 }
 
-// ValidateCodexBuckets rejects configurations that map one client API key
+// ValidateBuckets rejects configurations that map one client API key
 // into more than one bucket.
-func (c *SDKConfig) ValidateCodexBuckets() error {
+func (c *SDKConfig) ValidateBuckets() error {
 	if c == nil {
 		return nil
 	}
 	seen := make(map[string]string)
-	for name, bucket := range c.CodexBuckets {
+	for name, bucket := range c.Buckets {
 		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("codex-buckets: bucket name must not be empty or whitespace")
+			return fmt.Errorf("buckets: bucket name must not be empty or whitespace")
 		}
 		for _, key := range bucket.APIKeys {
 			key = strings.TrimSpace(key)
@@ -171,7 +172,7 @@ func (c *SDKConfig) ValidateCodexBuckets() error {
 				continue
 			}
 			if prev, ok := seen[key]; ok && prev != name {
-				return fmt.Errorf("codex-buckets: an api key is mapped to both bucket %q and bucket %q", prev, name)
+				return fmt.Errorf("buckets: an api key is mapped to both bucket %q and bucket %q", prev, name)
 			}
 			seen[key] = name
 		}
@@ -179,21 +180,21 @@ func (c *SDKConfig) ValidateCodexBuckets() error {
 	return nil
 }
 
-// CodexBucketModelRoutes rewrites a requested model to another provider's
-// model for client API keys in a given codex bucket, before credential
+// BucketModelRoutes rewrites a requested model to another provider's
+// model for client API keys in a given bucket, before credential
 // selection. Keys in other buckets keep the normal model resolution.
-type CodexBucketModelRoutes struct {
+type BucketModelRoutes struct {
 	// Enabled turns routing on. When false, Rules are ignored entirely.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// Rules lists the per-bucket model rewrites.
-	Rules []CodexBucketModelRoute `yaml:"rules,omitempty" json:"rules,omitempty"`
+	Rules []BucketModelRoute `yaml:"rules,omitempty" json:"rules,omitempty"`
 }
 
-// CodexBucketModelRoute sends requests for From from keys in Bucket to
+// BucketModelRoute sends requests for From from keys in Bucket to
 // provider Provider using model To.
-type CodexBucketModelRoute struct {
-	// Bucket is the codex bucket name; "default" or empty means keys not
+type BucketModelRoute struct {
+	// Bucket is the bucket name; "default" or empty means keys not
 	// mapped to any bucket.
 	Bucket string `yaml:"bucket" json:"bucket"`
 
@@ -208,31 +209,31 @@ type CodexBucketModelRoute struct {
 	To string `yaml:"to" json:"to"`
 }
 
-// CodexBucketDefaultName is the rule bucket name that stands for keys not
-// mapped to any codex bucket (whose bucket resolves to "").
-const CodexBucketDefaultName = "default"
+// DefaultBucketName is the rule bucket name that stands for keys not
+// mapped to any bucket (whose bucket resolves to "").
+const DefaultBucketName = "default"
 
-func normalizeCodexBucketRuleName(bucket string) string {
+func normalizeBucketRuleName(bucket string) string {
 	bucket = strings.TrimSpace(bucket)
-	if bucket == CodexBucketDefaultName {
+	if bucket == DefaultBucketName {
 		return ""
 	}
 	return bucket
 }
 
-// CodexBucketModelRoute returns the target provider and model for a request
+// BucketModelRoute returns the target provider and model for a request
 // from a key in bucket ("" for unmapped keys) asking for model. ok is false
 // when routing is disabled or no rule matches.
-func (c *SDKConfig) CodexBucketModelRoute(bucket, model string) (provider, to string, ok bool) {
-	if c == nil || !c.CodexBucketModelRoutes.Enabled {
+func (c *SDKConfig) BucketModelRoute(bucket, model string) (provider, to string, ok bool) {
+	if c == nil || !c.BucketModelRoutes.Enabled {
 		return "", "", false
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return "", "", false
 	}
-	for _, rule := range c.CodexBucketModelRoutes.Rules {
-		if normalizeCodexBucketRuleName(rule.Bucket) != bucket || strings.TrimSpace(rule.From) != model {
+	for _, rule := range c.BucketModelRoutes.Rules {
+		if normalizeBucketRuleName(rule.Bucket) != bucket || strings.TrimSpace(rule.From) != model {
 			continue
 		}
 		provider = strings.ToLower(strings.TrimSpace(rule.Provider))
@@ -245,27 +246,27 @@ func (c *SDKConfig) CodexBucketModelRoute(bucket, model string) (provider, to st
 	return "", "", false
 }
 
-// ValidateCodexBucketModelRoutes rejects rules missing from/provider/to and
+// ValidateBucketModelRoutes rejects rules missing from/provider/to and
 // rules that repeat the same bucket+from pair.
-func (c *SDKConfig) ValidateCodexBucketModelRoutes() error {
+func (c *SDKConfig) ValidateBucketModelRoutes() error {
 	if c == nil {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(c.CodexBucketModelRoutes.Rules))
-	for i, rule := range c.CodexBucketModelRoutes.Rules {
+	seen := make(map[string]struct{}, len(c.BucketModelRoutes.Rules))
+	for i, rule := range c.BucketModelRoutes.Rules {
 		from := strings.TrimSpace(rule.From)
 		if from == "" {
-			return fmt.Errorf("codex-bucket-model-routes: rule %d has an empty from", i)
+			return fmt.Errorf("bucket-model-routes: rule %d has an empty from", i)
 		}
 		if strings.TrimSpace(rule.Provider) == "" {
-			return fmt.Errorf("codex-bucket-model-routes: rule %d (%s) has an empty provider", i, from)
+			return fmt.Errorf("bucket-model-routes: rule %d (%s) has an empty provider", i, from)
 		}
 		if strings.TrimSpace(rule.To) == "" {
-			return fmt.Errorf("codex-bucket-model-routes: rule %d (%s) has an empty to", i, from)
+			return fmt.Errorf("bucket-model-routes: rule %d (%s) has an empty to", i, from)
 		}
-		key := normalizeCodexBucketRuleName(rule.Bucket) + "\x00" + from
+		key := normalizeBucketRuleName(rule.Bucket) + "\x00" + from
 		if _, dup := seen[key]; dup {
-			return fmt.Errorf("codex-bucket-model-routes: model %q is routed twice for bucket %q", from, rule.Bucket)
+			return fmt.Errorf("bucket-model-routes: model %q is routed twice for bucket %q", from, rule.Bucket)
 		}
 		seen[key] = struct{}{}
 	}
@@ -278,8 +279,8 @@ type APIKeyLimits struct {
 	// that is neither overridden nor bucket-exempt. 0 means unlimited.
 	DefaultRPM int `yaml:"default-rpm" json:"default-rpm"`
 
-	// ExemptBuckets lists codex bucket names whose client API keys are exempt
-	// from rate limiting. Names must exist in CodexBuckets.
+	// ExemptBuckets lists bucket names whose client API keys are exempt
+	// from rate limiting. Names must exist in Buckets.
 	ExemptBuckets []string `yaml:"exempt-buckets,omitempty" json:"exempt-buckets,omitempty"`
 
 	// Overrides maps a client API key to its own cap. An override wins over
@@ -290,7 +291,7 @@ type APIKeyLimits struct {
 // RPMLimitForAPIKey returns the requests-per-minute cap for a client API key.
 // 0 means unlimited. Precedence is Overrides > ExemptBuckets > DefaultRPM.
 // Configured keys and bucket names are trimmed before comparison, matching
-// CodexBucketForAPIKey; apiKey is compared as-is since it comes straight from
+// BucketForAPIKey; apiKey is compared as-is since it comes straight from
 // the caller's request.
 func (c *SDKConfig) RPMLimitForAPIKey(apiKey string) int {
 	if c == nil || apiKey == "" {
@@ -304,7 +305,7 @@ func (c *SDKConfig) RPMLimitForAPIKey(apiKey string) int {
 			return limit
 		}
 	}
-	if bucket := c.CodexBucketForAPIKey(apiKey); bucket != "" {
+	if bucket := c.BucketForAPIKey(apiKey); bucket != "" {
 		for _, name := range c.APIKeyLimits.ExemptBuckets {
 			if strings.TrimSpace(name) == bucket {
 				return 0
@@ -319,7 +320,7 @@ func (c *SDKConfig) RPMLimitForAPIKey(apiKey string) int {
 
 // RPMLimitForContextValue resolves the cap for a raw context value (typically a
 // gin "userApiKey" entry) by formatting it and delegating to RPMLimitForAPIKey,
-// mirroring CodexBucketForContextValue so every call site shares one lookup.
+// mirroring BucketForContextValue so every call site shares one lookup.
 func (c *SDKConfig) RPMLimitForContextValue(v any) int {
 	if c == nil || v == nil {
 		return 0
@@ -328,7 +329,7 @@ func (c *SDKConfig) RPMLimitForContextValue(v any) int {
 }
 
 // ValidateAPIKeyLimits rejects negative caps, exempt-bucket names that do
-// not exist in CodexBuckets, and Overrides keys that collide after trimming,
+// not exist in Buckets, and Overrides keys that collide after trimming,
 // so a typo cannot silently drop an exemption and a stray space cannot leave
 // two entries racing over the same key.
 func (c *SDKConfig) ValidateAPIKeyLimits() error {
@@ -342,7 +343,7 @@ func (c *SDKConfig) ValidateAPIKeyLimits() error {
 	// key, so "sk-a" and " sk-a " are distinct map keys that both match the
 	// same caller — Go's random map iteration order would then make the
 	// effective limit flip between the two on every request. Mirrors how
-	// ValidateCodexBuckets rejects one api key mapped into two buckets.
+	// ValidateBuckets rejects one api key mapped into two buckets.
 	seenOverrideKeys := make(map[string]string)
 	for key, limit := range c.APIKeyLimits.Overrides {
 		if limit < 0 {
@@ -359,7 +360,7 @@ func (c *SDKConfig) ValidateAPIKeyLimits() error {
 		if trimmed == "" {
 			return fmt.Errorf("api-key-limits: exempt-buckets must not contain an empty name")
 		}
-		if _, ok := c.CodexBuckets[trimmed]; !ok {
+		if _, ok := c.Buckets[trimmed]; !ok {
 			return fmt.Errorf("api-key-limits: exempt-buckets references unknown bucket %q", trimmed)
 		}
 	}
@@ -402,7 +403,7 @@ type ModelAccessRule struct {
 // matched by no rule are always allowed; a matched model is allowed only when
 // at least one matching rule lists the key. A "prefix/model" request is also
 // matched by its bare model name so provider prefixes need no separate rule.
-// Configured keys are trimmed before comparison, matching CodexBucketForAPIKey;
+// Configured keys are trimmed before comparison, matching BucketForAPIKey;
 // apiKey is compared as-is since it comes straight from the caller's request.
 func (c *SDKConfig) ModelAccessAllowed(apiKey, model string) bool {
 	if c == nil || !c.ModelAccess.Enabled {

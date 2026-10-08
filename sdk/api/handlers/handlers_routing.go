@@ -358,7 +358,7 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 }
 
 // applyModelRouter resolves a route for the request: plugin model routers are
-// consulted first; when none handles it, the configured codex bucket model
+// consulted first; when none handles it, the configured bucket model
 // routes apply.
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	decision := h.applyPluginModelRouter(ctx, handlerType, modelName, rawJSON, stream, execOptions)
@@ -369,17 +369,17 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
 }
 
 // bucketModelRoute rewrites the requested model to another provider's model
-// when codex-bucket-model-routes has a rule for the client API key's bucket.
+// when bucket-model-routes has a rule for the client API key's bucket.
 // Requests without an authenticated client API key are never rewritten.
 func (h *BaseAPIHandler) bucketModelRoute(ctx context.Context, modelName string) modelRouteDecision {
-	if h == nil || h.Cfg == nil || !h.Cfg.CodexBucketModelRoutes.Enabled || ctx == nil {
+	if h == nil || h.Cfg == nil || !h.Cfg.BucketModelRoutes.Enabled || ctx == nil {
 		return modelRouteDecision{}
 	}
 	ginCtx, _ := ctx.Value("gin").(*gin.Context)
 	if requestAPIKey(ginCtx) == "" {
 		return modelRouteDecision{}
 	}
-	provider, target, ok := h.Cfg.CodexBucketModelRoute(requestCodexBucket(ginCtx, h.Cfg), modelName)
+	provider, target, ok := h.Cfg.BucketModelRoute(requestBucket(ginCtx, h.Cfg), modelName)
 	if !ok {
 		return modelRouteDecision{}
 	}

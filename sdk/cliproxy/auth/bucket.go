@@ -3,7 +3,7 @@ package auth
 import "strings"
 
 // isBucketScopedProvider reports whether credentials of the provider are
-// partitioned by codex-buckets. Other providers ignore bucket tags.
+// partitioned by buckets. Other providers ignore bucket tags.
 func isBucketScopedProvider(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "codex", "claude":

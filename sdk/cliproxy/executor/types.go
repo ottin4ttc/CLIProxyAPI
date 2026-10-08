@@ -18,9 +18,9 @@ const RequestPathMetadataKey = "request_path"
 // DisallowFreeAuthMetadataKey instructs auth selection to skip known free-tier credentials.
 const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 
-// CodexBucketMetadataKey carries the client's codex bucket name so auth
-// selection can restrict codex credentials to that bucket.
-const CodexBucketMetadataKey = "codex_bucket"
+// BucketMetadataKey carries the client's bucket name so auth
+// selection can restrict bucket-scoped credentials to that bucket.
+const BucketMetadataKey = "bucket"
 
 // AuthSelectionModelMetadataKey overrides the model used only for auth selection.
 const AuthSelectionModelMetadataKey = "auth_selection_model"

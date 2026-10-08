@@ -31,13 +31,13 @@ func TestAuthBucket(t *testing.T) {
 	}
 }
 
-func TestEligibilityCodexBucket(t *testing.T) {
+func TestEligibilityBucket(t *testing.T) {
 	codexIn := &Auth{Provider: "codex", Metadata: map[string]any{AttributeBucket: "team-a"}}
 	codexOther := &Auth{Provider: "codex", Metadata: map[string]any{AttributeBucket: "team-b"}}
 	codexDefault := &Auth{Provider: "codex"}
 	gemini := &Auth{Provider: "gemini"}
 
-	bucketed := authSelectionEligibility{codexBucket: "team-a"}
+	bucketed := authSelectionEligibility{bucket: "team-a"}
 	if !bucketed.allows(codexIn) {
 		t.Fatal("bucketed request must allow same-bucket codex auth")
 	}
@@ -68,7 +68,7 @@ func TestEligibilityClaudeBucket(t *testing.T) {
 	claudeDefault := &Auth{Provider: "claude"}
 	antigravityTagged := &Auth{Provider: "antigravity", Metadata: map[string]any{AttributeBucket: "team-a"}}
 
-	bucketed := authSelectionEligibility{codexBucket: "team-a"}
+	bucketed := authSelectionEligibility{bucket: "team-a"}
 	if !bucketed.allows(claudeIn) {
 		t.Fatal("bucketed request must allow same-bucket claude auth")
 	}
@@ -88,15 +88,15 @@ func TestEligibilityClaudeBucket(t *testing.T) {
 	}
 }
 
-func TestCodexBucketFromMetadata(t *testing.T) {
-	if got := codexBucketFromMetadata(nil); got != "" {
+func TestBucketFromMetadata(t *testing.T) {
+	if got := bucketFromMetadata(nil); got != "" {
 		t.Fatalf("nil meta = %q, want empty", got)
 	}
-	meta := map[string]any{"codex_bucket": " team-a "}
-	if got := codexBucketFromMetadata(meta); got != "team-a" {
+	meta := map[string]any{"bucket": " team-a "}
+	if got := bucketFromMetadata(meta); got != "team-a" {
 		t.Fatalf("meta bucket = %q, want team-a", got)
 	}
-	if got := codexBucketFromMetadata(map[string]any{"codex_bucket": 7}); got != "" {
+	if got := bucketFromMetadata(map[string]any{"bucket": 7}); got != "" {
 		t.Fatalf("non-string = %q, want empty", got)
 	}
 }

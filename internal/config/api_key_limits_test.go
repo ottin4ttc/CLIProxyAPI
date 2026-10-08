@@ -4,7 +4,7 @@ import "testing"
 
 func TestRPMLimitForAPIKeyPrecedence(t *testing.T) {
 	cfg := &SDKConfig{
-		CodexBuckets: map[string]CodexBucket{
+		Buckets: map[string]Bucket{
 			"anon": {APIKeys: []string{"sk-anon", "sk-anon-override"}},
 		},
 		APIKeyLimits: APIKeyLimits{
@@ -48,7 +48,7 @@ func TestRPMLimitForAPIKeyTrimsConfiguredKey(t *testing.T) {
 	if got := cfg.RPMLimitForAPIKey("sk-heavy"); got != 120 {
 		t.Fatalf("RPMLimitForAPIKey(sk-heavy) = %d, want 120 (configured key should be trimmed)", got)
 	}
-	// The caller's key is compared as-is, matching CodexBucketForAPIKey.
+	// The caller's key is compared as-is, matching BucketForAPIKey.
 	if got := cfg.RPMLimitForAPIKey(" sk-heavy "); got != 40 {
 		t.Fatalf("RPMLimitForAPIKey(\" sk-heavy \") = %d, want 40 (caller key is not trimmed)", got)
 	}
@@ -70,7 +70,7 @@ func TestRPMLimitForContextValue(t *testing.T) {
 func TestValidateAPIKeyLimits(t *testing.T) {
 	base := func() *SDKConfig {
 		return &SDKConfig{
-			CodexBuckets: map[string]CodexBucket{"anon": {APIKeys: []string{"sk-anon"}}},
+			Buckets:      map[string]Bucket{"anon": {APIKeys: []string{"sk-anon"}}},
 			APIKeyLimits: APIKeyLimits{DefaultRPM: 40, ExemptBuckets: []string{"anon"}},
 		}
 	}

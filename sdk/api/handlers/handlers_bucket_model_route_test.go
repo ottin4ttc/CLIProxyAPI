@@ -10,10 +10,10 @@ import (
 
 func bucketModelRouteTestConfig(enabled bool) *config.SDKConfig {
 	return &config.SDKConfig{
-		CodexBuckets: map[string]config.CodexBucket{"anon": {APIKeys: []string{"sk-anon"}}},
-		CodexBucketModelRoutes: config.CodexBucketModelRoutes{
+		Buckets: map[string]config.Bucket{"anon": {APIKeys: []string{"sk-anon"}}},
+		BucketModelRoutes: config.BucketModelRoutes{
 			Enabled: enabled,
-			Rules: []config.CodexBucketModelRoute{
+			Rules: []config.BucketModelRoute{
 				{Bucket: "default", From: "gpt-5.6-sol", Provider: "antigravity", To: "gemini-3.8-flash-high"},
 			},
 		},

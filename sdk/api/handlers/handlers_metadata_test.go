@@ -207,35 +207,35 @@ func TestSetGenerateMetadataHonorsExplicitFalse(t *testing.T) {
 	}
 }
 
-func TestRequestExecutionMetadataIncludesCodexBucket(t *testing.T) {
+func TestRequestExecutionMetadataIncludesBucket(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	ginCtx.Set("userApiKey", "sk-team-a")
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
-	cfg := &config.SDKConfig{CodexBuckets: map[string]config.CodexBucket{
+	cfg := &config.SDKConfig{Buckets: map[string]config.Bucket{
 		"team-a": {APIKeys: []string{"sk-team-a"}},
 	}}
 
 	meta := requestExecutionMetadata(ctx, cfg)
-	if got, _ := meta[coreexecutor.CodexBucketMetadataKey].(string); got != "team-a" {
-		t.Fatalf("CodexBucketMetadataKey = %q, want team-a", got)
+	if got, _ := meta[coreexecutor.BucketMetadataKey].(string); got != "team-a" {
+		t.Fatalf("BucketMetadataKey = %q, want team-a", got)
 	}
 }
 
-func TestRequestExecutionMetadataOmitsCodexBucketForUnmappedKey(t *testing.T) {
+func TestRequestExecutionMetadataOmitsBucketForUnmappedKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	ginCtx.Set("userApiKey", "sk-unmapped")
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
-	cfg := &config.SDKConfig{CodexBuckets: map[string]config.CodexBucket{
+	cfg := &config.SDKConfig{Buckets: map[string]config.Bucket{
 		"team-a": {APIKeys: []string{"sk-team-a"}},
 	}}
 
 	meta := requestExecutionMetadata(ctx, cfg)
-	if _, ok := meta[coreexecutor.CodexBucketMetadataKey]; ok {
-		t.Fatal("unmapped key must not publish a codex bucket")
+	if _, ok := meta[coreexecutor.BucketMetadataKey]; ok {
+		t.Fatal("unmapped key must not publish a bucket")
 	}
 }
 

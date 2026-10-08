@@ -207,7 +207,7 @@ func executionPassthroughHeaders(cfg *config.SDKConfig, internal bool) bool {
 	return internal || PassthroughHeadersEnabled(cfg)
 }
 
-// cfg stays on the signature for the Codex bucket lookup below, which upstream does not have.
+// cfg stays on the signature for the bucket lookup below, which upstream does not have.
 func requestExecutionMetadata(ctx context.Context, cfg *config.SDKConfig) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// Only include it if the client explicitly provides it.
@@ -252,8 +252,8 @@ func requestExecutionMetadata(ctx context.Context, cfg *config.SDKConfig) map[st
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
-	if bucket := requestCodexBucket(ginCtx, cfg); bucket != "" {
-		meta[coreexecutor.CodexBucketMetadataKey] = bucket
+	if bucket := requestBucket(ginCtx, cfg); bucket != "" {
+		meta[coreexecutor.BucketMetadataKey] = bucket
 	}
 	return meta
 }
@@ -316,7 +316,7 @@ func requestCallerScope(ginCtx *gin.Context) string {
 	return coresession.CallerScope(fmt.Sprint(value))
 }
 
-func requestCodexBucket(ginCtx *gin.Context, cfg *config.SDKConfig) string {
+func requestBucket(ginCtx *gin.Context, cfg *config.SDKConfig) string {
 	if ginCtx == nil || cfg == nil {
 		return ""
 	}
@@ -324,7 +324,7 @@ func requestCodexBucket(ginCtx *gin.Context, cfg *config.SDKConfig) string {
 	if !exists || value == nil {
 		return ""
 	}
-	return cfg.CodexBucketForAPIKey(fmt.Sprint(value))
+	return cfg.BucketForAPIKey(fmt.Sprint(value))
 }
 
 func addAuthSelectionModelMetadata(meta map[string]any, model string) {

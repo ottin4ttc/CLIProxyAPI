@@ -219,8 +219,8 @@ func (h *Handler) Handle(c *gin.Context) {
 		Headers:         liveSelectionHeaders(c),
 		OriginalRequest: body,
 	}
-	if bucket := h.codexBucketForContext(c); bucket != "" {
-		selectionOpts.Metadata = map[string]any{coreexecutor.CodexBucketMetadataKey: bucket}
+	if bucket := h.bucketForContext(c); bucket != "" {
+		selectionOpts.Metadata = map[string]any{coreexecutor.BucketMetadataKey: bucket}
 	}
 	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, selectionOpts.Headers, body, nil)
 	selection, selected, errSelect := h.selectOAuth(ctx, model, selectionOpts)
@@ -489,15 +489,15 @@ func mediaCredentialName(selected *auth.Auth, authIndex string) string {
 	return strings.TrimSpace(authIndex)
 }
 
-// codexBucketForContext resolves the codex bucket for the client API key
+// bucketForContext resolves the bucket for the client API key
 // authenticated on this request, or "" when unmapped. This mirrors the
-// primary request pipeline's requestCodexBucket (sdk/api/handlers/handlers.go)
+// primary request pipeline's requestBucket (sdk/api/handlers/handlers.go)
 // so the Codex Live WebRTC side channel, which selects auth outside that
-// pipeline, still honors codex-buckets routing. Called from both Handle's
+// pipeline, still honors bucket routing. Called from both Handle's
 // initial selection and HandleSideband's pinned reselection (sideband.go),
 // since eligibility filtering re-checks the bucket on every selection,
 // including pinned-auth-ID reselects.
-func (h *Handler) codexBucketForContext(c *gin.Context) string {
+func (h *Handler) bucketForContext(c *gin.Context) string {
 	if h == nil || h.cfg == nil || c == nil {
 		return ""
 	}
@@ -505,7 +505,7 @@ func (h *Handler) codexBucketForContext(c *gin.Context) string {
 	if !exists {
 		return ""
 	}
-	return h.cfg.CodexBucketForContextValue(value)
+	return h.cfg.BucketForContextValue(value)
 }
 
 func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecutor.Options) (*auth.HomeDispatchSelection, *auth.Auth, error) {

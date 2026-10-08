@@ -79,7 +79,7 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
-	codexBucket      string
+	bucket           string
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -101,7 +101,7 @@ func credentialPolicyFromContext(ctx context.Context) string {
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
 	eligibility := authSelectionEligibility{
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
-		codexBucket:      codexBucketFromMetadata(opts.Metadata),
+		bucket:           bucketFromMetadata(opts.Metadata),
 	}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
@@ -123,7 +123,7 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.disallowFreeAuth && isFreeCodexAuth(auth) {
 		return false
 	}
-	if isBucketScopedProvider(auth.Provider) && authBucket(auth) != e.codexBucket {
+	if isBucketScopedProvider(auth.Provider) && authBucket(auth) != e.bucket {
 		return false
 	}
 	return true

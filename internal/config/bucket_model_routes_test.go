@@ -7,9 +7,9 @@ import (
 )
 
 func bucketModelRoutesTestConfig(enabled bool) *SDKConfig {
-	return &SDKConfig{CodexBucketModelRoutes: CodexBucketModelRoutes{
+	return &SDKConfig{BucketModelRoutes: BucketModelRoutes{
 		Enabled: enabled,
-		Rules: []CodexBucketModelRoute{
+		Rules: []BucketModelRoute{
 			{Bucket: "default", From: "gpt-5.6-sol", Provider: "antigravity", To: "gemini-3.8-flash-high"},
 			{Bucket: "", From: "gpt-5.6-terra", Provider: " Antigravity ", To: " gemini-3.8-flash-high "},
 			{Bucket: "team-a", From: "gpt-5.6-sol", Provider: "deepseek", To: "deepseek-chat"},
@@ -17,18 +17,18 @@ func bucketModelRoutesTestConfig(enabled bool) *SDKConfig {
 	}}
 }
 
-func TestCodexBucketModelRouteDisabledIgnoresRules(t *testing.T) {
+func TestBucketModelRouteDisabledIgnoresRules(t *testing.T) {
 	cfg := bucketModelRoutesTestConfig(false)
-	if _, _, ok := cfg.CodexBucketModelRoute("", "gpt-5.6-sol"); ok {
+	if _, _, ok := cfg.BucketModelRoute("", "gpt-5.6-sol"); ok {
 		t.Fatal("disabled routes must not match")
 	}
 	var nilCfg *SDKConfig
-	if _, _, ok := nilCfg.CodexBucketModelRoute("", "gpt-5.6-sol"); ok {
+	if _, _, ok := nilCfg.BucketModelRoute("", "gpt-5.6-sol"); ok {
 		t.Fatal("nil receiver must not match")
 	}
 }
 
-func TestCodexBucketModelRouteEnabled(t *testing.T) {
+func TestBucketModelRouteEnabled(t *testing.T) {
 	cfg := bucketModelRoutesTestConfig(true)
 	cases := []struct {
 		name         string
@@ -47,47 +47,47 @@ func TestCodexBucketModelRouteEnabled(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			provider, to, ok := cfg.CodexBucketModelRoute(tc.bucket, tc.model)
+			provider, to, ok := cfg.BucketModelRoute(tc.bucket, tc.model)
 			if ok != tc.wantOK || provider != tc.wantProvider || to != tc.wantTo {
-				t.Fatalf("CodexBucketModelRoute(%q, %q) = (%q, %q, %v), want (%q, %q, %v)",
+				t.Fatalf("BucketModelRoute(%q, %q) = (%q, %q, %v), want (%q, %q, %v)",
 					tc.bucket, tc.model, provider, to, ok, tc.wantProvider, tc.wantTo, tc.wantOK)
 			}
 		})
 	}
 }
 
-func TestValidateCodexBucketModelRoutes(t *testing.T) {
-	if err := bucketModelRoutesTestConfig(true).ValidateCodexBucketModelRoutes(); err != nil {
+func TestValidateBucketModelRoutes(t *testing.T) {
+	if err := bucketModelRoutesTestConfig(true).ValidateBucketModelRoutes(); err != nil {
 		t.Fatalf("valid rules rejected: %v", err)
 	}
-	if err := (&SDKConfig{}).ValidateCodexBucketModelRoutes(); err != nil {
+	if err := (&SDKConfig{}).ValidateBucketModelRoutes(); err != nil {
 		t.Fatalf("empty config rejected: %v", err)
 	}
 	bad := []struct {
 		name  string
-		rules []CodexBucketModelRoute
+		rules []BucketModelRoute
 	}{
-		{"missing from", []CodexBucketModelRoute{{Bucket: "default", Provider: "antigravity", To: "x"}}},
-		{"missing provider", []CodexBucketModelRoute{{Bucket: "default", From: "a", To: "x"}}},
-		{"missing to", []CodexBucketModelRoute{{Bucket: "default", From: "a", Provider: "antigravity"}}},
-		{"duplicate bucket+from", []CodexBucketModelRoute{
+		{"missing from", []BucketModelRoute{{Bucket: "default", Provider: "antigravity", To: "x"}}},
+		{"missing provider", []BucketModelRoute{{Bucket: "default", From: "a", To: "x"}}},
+		{"missing to", []BucketModelRoute{{Bucket: "default", From: "a", Provider: "antigravity"}}},
+		{"duplicate bucket+from", []BucketModelRoute{
 			{Bucket: "default", From: "a", Provider: "antigravity", To: "x"},
 			{Bucket: "", From: "a", Provider: "deepseek", To: "y"},
 		}},
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &SDKConfig{CodexBucketModelRoutes: CodexBucketModelRoutes{Enabled: true, Rules: tc.rules}}
-			if err := cfg.ValidateCodexBucketModelRoutes(); err == nil {
+			cfg := &SDKConfig{BucketModelRoutes: BucketModelRoutes{Enabled: true, Rules: tc.rules}}
+			if err := cfg.ValidateBucketModelRoutes(); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})
 	}
 }
 
-func TestLoadConfigCodexBucketModelRoutes(t *testing.T) {
+func TestLoadConfigBucketModelRoutes(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	valid := "codex-bucket-model-routes:\n  enabled: true\n  rules:\n    - bucket: default\n      from: gpt-5.6-sol\n      provider: antigravity\n      to: gemini-3.8-flash-high\n"
+	valid := "bucket-model-routes:\n  enabled: true\n  rules:\n    - bucket: default\n      from: gpt-5.6-sol\n      provider: antigravity\n      to: gemini-3.8-flash-high\n"
 	if err := os.WriteFile(configPath, []byte(valid), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -95,12 +95,12 @@ func TestLoadConfigCodexBucketModelRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	provider, to, ok := cfg.CodexBucketModelRoute("", "gpt-5.6-sol")
+	provider, to, ok := cfg.BucketModelRoute("", "gpt-5.6-sol")
 	if !ok || provider != "antigravity" || to != "gemini-3.8-flash-high" {
 		t.Fatalf("loaded route = (%q, %q, %v)", provider, to, ok)
 	}
 
-	invalid := "codex-bucket-model-routes:\n  enabled: true\n  rules:\n    - bucket: default\n      from: gpt-5.6-sol\n      provider: antigravity\n"
+	invalid := "bucket-model-routes:\n  enabled: true\n  rules:\n    - bucket: default\n      from: gpt-5.6-sol\n      provider: antigravity\n"
 	if err := os.WriteFile(configPath, []byte(invalid), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
