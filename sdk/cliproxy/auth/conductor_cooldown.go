@@ -1937,10 +1937,15 @@ func hasDisabledInvalidGrantFailure(auth *Auth) bool {
 	if auth.LastError != nil && (isInvalidGrantResultError(auth.LastError) || isInvalidGrantErrorMessage(auth.LastError.Message) || isInvalidGrantErrorMessage(auth.LastError.Code)) {
 		return true
 	}
+	// A disabled credential whose refresh token was rejected with 401 is just as
+	// unrecoverable as invalid_grant; keep it out of the refresh schedule too.
+	if auth.LastError != nil && (auth.LastError.StatusCode() == http.StatusUnauthorized || strings.EqualFold(auth.LastError.Code, "unauthorized")) {
+		return true
+	}
 	return false
 }
 
-// HasDisabledInvalidGrantFailure reports whether the auth is disabled and has encountered an invalid_grant error.
+// HasDisabledInvalidGrantFailure reports whether the auth is disabled and has encountered an invalid_grant or unauthorized refresh error.
 func HasDisabledInvalidGrantFailure(auth *Auth) bool {
 	return hasDisabledInvalidGrantFailure(auth)
 }
