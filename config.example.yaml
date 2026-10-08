@@ -351,7 +351,26 @@ requests:
   #           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
   #       params: # JSON path (gjson/sjson syntax) -> raw JSON value (strings are used as-is, must be valid JSON)
   #         "response_format": "{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"answer\",\"schema\":{\"type\":\"object\"}}}"
+  #     # Honor an explicit "disable thinking" request on upstreams whose own toggle is not reasoning_effort.
+  #     # DeepSeek turns thinking off with {"thinking":{"type":"disabled"}}; its reasoning_effort only sets
+  #     # the strength and has no "off" value. The model entry must declare thinking.levels including "none",
+  #     # otherwise the pipeline emits the lowest declared level and the match below never fires.
+  #     - models:
+  #         - name: "deepseek-*"
+  #           protocol: "openai"
+  #           match:
+  #             - "reasoning_effort": "none"
+  #       params:
+  #         "thinking": '{"type":"disabled"}'
   #   filter: # Filter rules remove specified parameters from the payload.
+  #     # Pair with the override-raw rule above: drop the effort field the upstream cannot use to disable thinking.
+  #     - models:
+  #         - name: "deepseek-*"
+  #           protocol: "openai"
+  #           match:
+  #             - "reasoning_effort": "none"
+  #       params:
+  #         - "reasoning_effort"
   #     - models:
   #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
   #           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
