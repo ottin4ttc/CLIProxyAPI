@@ -284,6 +284,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
 	if errMsg := modelAccessError(ctx, h.Cfg, originalRequestedModel); errMsg != nil {
+		publishPreUpstreamFailure(coreusage.WithStream(ctx, true), nil, originalRequestedModel, nil, errMsg, execOptions.InternalSource)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
@@ -307,6 +308,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
+		publishPreUpstreamFailure(coreusage.WithStream(ctx, true), nil, originalRequestedModel, nil, errMsg, execOptions.InternalSource)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
@@ -357,10 +359,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	ctx, publishTracker := coreusage.WithPublishTracker(ctx)
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
+		noUsableAuth := isNoUsableAuthError(err)
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
+		if noUsableAuth {
+			publishPreUpstreamFailure(coreusage.WithStream(ctx, true), providers, originalRequestedModel, publishTracker, errMsg, execOptions.InternalSource)
+		}
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg

@@ -95,6 +95,48 @@ type generateContextKey struct{}
 type streamContextKey struct{}
 type executionRequestIDContextKey struct{}
 type executionTraceIDContextKey struct{}
+type publishTrackerContextKey struct{}
+
+// PublishTracker remembers whether any usage record was published through a
+// context carrying it. Request handlers use it to tell a request that failed
+// before any upstream attempt — and so left no record at all — from one whose
+// attempts already published their own failure records.
+type PublishTracker struct {
+	mu        sync.Mutex
+	published bool
+}
+
+// Published reports whether a record has been published through the tracker.
+func (t *PublishTracker) Published() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.published
+}
+
+func (t *PublishTracker) mark() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.published = true
+	t.mu.Unlock()
+}
+
+// WithPublishTracker attaches a PublishTracker to the context. An existing
+// tracker is reused so nested executions of one request share it.
+func WithPublishTracker(ctx context.Context) (context.Context, *PublishTracker) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if existing, ok := ctx.Value(publishTrackerContextKey{}).(*PublishTracker); ok && existing != nil {
+		return ctx, existing
+	}
+	tracker := &PublishTracker{}
+	return context.WithValue(ctx, publishTrackerContextKey{}, tracker), tracker
+}
 
 // WithExecutionRequestID attaches a specific execution instance request ID to the context.
 func WithExecutionRequestID(ctx context.Context, requestID string) context.Context {
@@ -390,6 +432,11 @@ func (m *Manager) RegisterNamed(name string, plugin Plugin) {
 func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
+	}
+	if ctx != nil {
+		if tracker, ok := ctx.Value(publishTrackerContextKey{}).(*PublishTracker); ok {
+			tracker.mark()
+		}
 	}
 	if strings.TrimSpace(record.RequestID) == "" {
 		if reqID := ExecutionRequestIDFromContext(ctx); reqID != "" {

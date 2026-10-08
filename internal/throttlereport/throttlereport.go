@@ -1,5 +1,7 @@
 // Package throttlereport publishes the failed-usage record and log line for a
-// request rejected by the per-client-API-key RPM limit (internal/apikeylimit).
+// request rejected by the per-client-API-key RPM limit (internal/apikeylimit),
+// and the failed-usage record for a request rejected by AuthMiddleware
+// (missing or invalid client API key).
 //
 // It exists so the HTTP middleware (internal/api) and the WebSocket
 // generation-dispatch path (sdk/api/handlers/openai) emit byte-identical
@@ -7,7 +9,7 @@
 // imports sdk/api/handlers/..., so sdk/api/handlers/openai cannot import
 // internal/api; this package sits below both so either side can call it
 // without an import cycle. It holds no state of its own and depends only on
-// gin, internal/logging, and sdk/cliproxy/usage.
+// gin, internal/logging, internal/util, and sdk/cliproxy/usage.
 package throttlereport
 
 import (
@@ -22,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -104,6 +107,56 @@ func requestEndpoint(c *gin.Context) string {
 // endpoint — without them, one API key shared across several machines could
 // not be attributed to whichever client is hammering the limit.
 func PublishUsage(c *gin.Context, apiKey string, limit int) {
+	publishRejected(c, apiKey, http.StatusTooManyRequests,
+		fmt.Sprintf(`{"error":{"code":"rpm_limit_exceeded","limit":%d}}`, limit))
+}
+
+// PublishAuthFailure emits a failed usage record for a request rejected by
+// AuthMiddleware because its client API key is missing or invalid. Like an
+// RPM rejection it never reaches an executor, so without this record the
+// request leaves no trace downstream: a client hammering CPA with the wrong
+// key only ever shows up as 401 lines in the gin log, and the usage
+// database's error classes have nothing to put it under.
+//
+// The presented key is never forwarded. The record carries only its masked
+// form (util.HideAPIKey, e.g. "bce-...94ea") as the API key and in the body,
+// so the sink can still group repeated attempts with the same wrong key and a
+// reader can recognise it, while a foreign secret pasted into the wrong
+// client is neither queued nor hashed anywhere.
+func PublishAuthFailure(c *gin.Context, statusCode int, code, message string) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	masked := util.HideAPIKey(presentedAPIKey(c.Request))
+	publishRejected(c, masked, statusCode,
+		fmt.Sprintf(`{"error":{"code":%q,"message":%q,"key":%q}}`, code, message, masked))
+}
+
+// presentedAPIKey returns the first client credential the request carries, in
+// the order the config-api-key access provider checks them
+// (internal/access/config_access/provider.go).
+func presentedAPIKey(r *http.Request) string {
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if parts := strings.SplitN(authorization, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		authorization = strings.TrimSpace(parts[1])
+	}
+	candidates := []string{authorization, r.Header.Get("X-Goog-Api-Key"), r.Header.Get("X-Api-Key")}
+	if r.URL != nil {
+		query := r.URL.Query()
+		candidates = append(candidates, query.Get("key"), query.Get("auth_token"))
+	}
+	for _, candidate := range candidates {
+		if candidate = strings.TrimSpace(candidate); candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// publishRejected emits the failed usage record shared by every rejection
+// this package reports, with the same endpoint and client-request metadata
+// the normal pipeline attaches.
+func publishRejected(c *gin.Context, apiKey string, statusCode int, body string) {
 	if c == nil || c.Request == nil {
 		return
 	}
@@ -123,8 +176,8 @@ func PublishUsage(c *gin.Context, apiKey string, limit int) {
 		RequestedAt: time.Now(),
 		Failed:      true,
 		Fail: usage.Failure{
-			StatusCode: http.StatusTooManyRequests,
-			Body:       fmt.Sprintf(`{"error":{"code":"rpm_limit_exceeded","limit":%d}}`, limit),
+			StatusCode: statusCode,
+			Body:       body,
 		},
 	})
 }

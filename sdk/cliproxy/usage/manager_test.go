@@ -85,3 +85,22 @@ func TestRecordOmittedGenerateIsEnabled(t *testing.T) {
 		t.Fatalf("GenerateEnabled(omitted) = false, want true")
 	}
 }
+
+func TestPublishTrackerMarksOnPublish(t *testing.T) {
+	ctx, tracker := WithPublishTracker(context.Background())
+	if tracker.Published() {
+		t.Fatal("a fresh tracker must not report a publish")
+	}
+	nestedCtx, nested := WithPublishTracker(context.WithValue(ctx, struct{ k string }{"child"}, 1))
+	if nested != tracker {
+		t.Fatal("a nested execution must reuse the request's tracker")
+	}
+	NewManager(0).Publish(nestedCtx, Record{Model: "tracker-test"})
+	if !tracker.Published() {
+		t.Fatal("publishing through a derived context must mark the tracker")
+	}
+	var none *PublishTracker
+	if none.Published() {
+		t.Fatal("a nil tracker reports no publish")
+	}
+}

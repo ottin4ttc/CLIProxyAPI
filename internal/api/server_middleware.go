@@ -185,6 +185,10 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 		statusCode := err.HTTPStatusCode()
 		if statusCode >= http.StatusInternalServerError {
 			log.Errorf("authentication middleware error: %v", err)
+		} else if c.Request.URL != nil && !rpmLimitExemptPath(c.Request.Method, c.Request.URL.Path) {
+			// Same scope as RPM accounting: generation requests get a failed
+			// usage record, model-list probes and other metadata paths do not.
+			throttlereport.PublishAuthFailure(c, statusCode, string(err.Code), err.Message)
 		}
 		if realtimeError {
 			errorType := "authentication_error"

@@ -430,3 +430,45 @@ func TestAPIKeyHashPrefix(t *testing.T) {
 		t.Fatal("different keys must hash differently")
 	}
 }
+
+// TestAuthFailurePublishesUsageThroughRealRouting proves a generation request
+// rejected by AuthMiddleware leaves a failed usage record (masked key, 401),
+// while a model-list probe with a wrong key does not.
+func TestAuthFailurePublishesUsageThroughRealRouting(t *testing.T) {
+	captured := make(chan usage.Record, 16)
+	usage.RegisterNamedPlugin("auth-failure-test", usagePluginFunc(func(_ context.Context, r usage.Record) {
+		captured <- r
+	}))
+	defer usage.RegisterNamedPlugin("auth-failure-test", usagePluginFunc(func(context.Context, usage.Record) {}))
+
+	s := newRPMWiringTestServer(t, "sk-valid-auth-failure", 0)
+
+	if rec := rpmWiringAuthedRequest(s, http.MethodGet, "/v1/models", "sk-probe-models-7777"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("models probe with wrong key = %d, want 401", rec.Code)
+	}
+	if rec := rpmWiringAuthedRequest(s, http.MethodPost, "/v1/messages", "sk-wrong-generation-1234"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("generation with wrong key = %d, want 401", rec.Code)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case record := <-captured:
+			if record.APIKey == "sk-p...7777" {
+				t.Fatal("a /v1/models probe must not publish a usage record")
+			}
+			if record.APIKey != "sk-w...1234" {
+				continue
+			}
+			if !record.Failed || record.Fail.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("record = failed %v status %d, want failed 401", record.Failed, record.Fail.StatusCode)
+			}
+			if !strings.Contains(record.Fail.Body, "invalid_credential") {
+				t.Fatalf("record.Fail.Body = %q, want the invalid_credential code", record.Fail.Body)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no usage record published for the rejected generation request")
+		}
+	}
+}
