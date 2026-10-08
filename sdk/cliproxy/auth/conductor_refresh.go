@@ -732,12 +732,17 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			// failedAccessToken is set only when upstream rejected this exact access
 			// token. Its expiry time no longer proves it is usable.
 			accessTokenRejected := failedAccessToken != "" && authAccessToken(current) == failedAccessToken
-			if isDisabled && invalidGrant {
+			if isDisabled && (invalidGrant || unauthorized) {
+				// A refresh token the provider rejects cannot recover without a new
+				// login, so retrying it every backoff only spams the token endpoint.
 				current.Unavailable = true
 				current.Status = StatusDisabled
 				current.NextRefreshAfter = time.Time{}
 				current.RefreshFailures = 0
 				current.StatusMessage = "disabled (invalid grant)"
+				if !invalidGrant {
+					current.StatusMessage = "disabled (unauthorized)"
+				}
 				shouldUnschedule = true
 			} else if isDisabled {
 				current.Unavailable = true
