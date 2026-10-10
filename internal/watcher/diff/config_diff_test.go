@@ -752,3 +752,11 @@ func TestBuildConfigChangeDetails_BucketModelRoutes(t *testing.T) {
 	changes := BuildConfigChangeDetails(oldCfg, newCfg)
 	expectContains(t, changes, "bucket-model-routes: enabled false -> true, rules 0 -> 1")
 }
+
+func TestBuildConfigChangeDetails_ClaudeKeyBucket(t *testing.T) {
+	oldCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "c1", BaseURL: "http://c"}}}
+	newCfg := &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "c1", BaseURL: "http://c", Bucket: "team-a"}}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "claude[0].bucket:  -> team-a")
+}

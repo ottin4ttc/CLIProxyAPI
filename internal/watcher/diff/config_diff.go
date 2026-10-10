@@ -304,6 +304,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("claude[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
 			}
+			if strings.TrimSpace(o.Bucket) != strings.TrimSpace(n.Bucket) {
+				changes = append(changes, fmt.Sprintf("claude[%d].bucket: %s -> %s", i, strings.TrimSpace(o.Bucket), strings.TrimSpace(n.Bucket)))
+			}
 			changes = appendOptionalBoolChange(changes, fmt.Sprintf("claude[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("claude[%d].api-key: updated", i))

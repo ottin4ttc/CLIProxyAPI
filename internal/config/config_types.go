@@ -543,6 +543,10 @@ type ClaudeKey struct {
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// Bucket optionally tags this credential with a buckets entry, so only that
+	// bucket's client keys can select it. Empty keeps it unbucketed.
+	Bucket string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
+
 	// BaseURL is the base URL for the Claude API endpoint.
 	// If empty, the default Claude API URL will be used.
 	BaseURL string `yaml:"base-url" json:"base-url"`

@@ -1322,3 +1322,39 @@ func TestConfigSynthesizer_RequestScopedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigSynthesizer_ClaudeKeys_Bucket(t *testing.T) {
+	synthesize := func(keys ...config.ClaudeKey) []*coreauth.Auth {
+		t.Helper()
+		auths, err := NewConfigSynthesizer().Synthesize(&SynthesisContext{
+			Config:      &config.Config{ClaudeKey: keys},
+			Now:         time.Now(),
+			IDGenerator: NewStableIDGenerator(),
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return auths
+	}
+	base := config.ClaudeKey{APIKey: "shared-key", BaseURL: "https://claude.example.com"}
+	bucketed := base
+	bucketed.Bucket = " team-a "
+
+	auths := synthesize(base, bucketed)
+	if len(auths) != 2 {
+		t.Fatalf("expected 2 auths, got %d", len(auths))
+	}
+	if _, ok := auths[0].Attributes["bucket"]; ok {
+		t.Errorf("unbucketed key must not carry a bucket attribute, got %q", auths[0].Attributes["bucket"])
+	}
+	if got := auths[1].Attributes["bucket"]; got != "team-a" {
+		t.Errorf("expected bucket team-a, got %q", got)
+	}
+	if auths[0].ID == auths[1].ID || strings.HasSuffix(auths[1].ID, "-1") {
+		t.Errorf("bucket must seed a distinct auth id, got %q and %q", auths[0].ID, auths[1].ID)
+	}
+	wantID, _ := NewStableIDGenerator().Next("claude:apikey", base.APIKey, base.BaseURL, "", "", "")
+	if auths[0].ID != wantID {
+		t.Errorf("unbucketed auth id must stay stable, got %q want %q", auths[0].ID, wantID)
+	}
+}

@@ -149,13 +149,22 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		}
 		prefix := strings.TrimSpace(ck.Prefix)
 		proxyURL := strings.TrimSpace(ck.ProxyURL)
-		id, token := idGen.Next("claude:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(ck.Headers))
+		bucket := strings.TrimSpace(ck.Bucket)
+		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(ck.Headers)}
+		if bucket != "" {
+			// Appended only when set so unbucketed auth IDs stay stable.
+			idParts = append(idParts, bucket)
+		}
+		id, token := idGen.Next("claude:apikey", idParts...)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:claude[%s]", token),
 			"config_index": strconv.Itoa(i),
 		}
 		if key != "" {
 			attrs["api_key"] = key
+		}
+		if bucket != "" {
+			attrs[coreauth.AttributeBucket] = bucket
 		}
 		metadata := map[string]any{}
 		if ck.DisableCooling != nil {
