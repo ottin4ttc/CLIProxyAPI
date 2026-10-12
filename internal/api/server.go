@@ -219,6 +219,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// reach s.rpmLimiter directly, so both transports count against the same
 	// per-key budget.
 	s.rpmLimiter = apikeylimit.Default()
+	applyClaudeToolSearchConfig(cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)

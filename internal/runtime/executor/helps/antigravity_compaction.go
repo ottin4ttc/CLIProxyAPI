@@ -28,6 +28,11 @@ type antigravityCompactionCapsuleData struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+// RecognizedAntigravityCompactionCapsule reports whether encrypted content uses the CPA capsule prefix.
+func RecognizedAntigravityCompactionCapsule(encryptedContent string) bool {
+	return strings.HasPrefix(strings.TrimSpace(encryptedContent), antigravityCompactionCapsulePrefix)
+}
+
 // PrepareAntigravityCompactionSummaryPayload prepares a payload for non-stream Antigravity summary generation.
 func PrepareAntigravityCompactionSummaryPayload(payload []byte, modelName string) []byte {
 	return PrepareResponsesCompactionSummaryPayload(payload, modelName)
