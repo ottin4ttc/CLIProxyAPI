@@ -50,6 +50,15 @@ type authScheduler struct {
 	authGenerations     map[string]scheduledGenerationMeta
 	mixedCursors        map[string]int
 	mixedWeightedStates map[string]*smoothWeightedState
+	// bucketIndex returns the owning manager's bucket index; nil when unset.
+	bucketIndex func() bucketIndex
+}
+
+func (s *authScheduler) loadBucketIndex() bucketIndex {
+	if s == nil || s.bucketIndex == nil {
+		return nil
+	}
+	return s.bucketIndex()
 }
 
 // providerScheduler stores auth metadata and model shards for a single provider.
@@ -405,7 +414,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	providerKey := canonicalSchedulingProvider(provider)
 	modelKey := canonicalModelKey(model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, s.loadBucketIndex())
 	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerPrefersWebsocketTransport(providerKey) && pinnedAuthID == ""
 
 	s.mu.Lock()
@@ -464,7 +473,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		return picked, providerKey, nil
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, s.loadBucketIndex())
 	modelKey := canonicalModelKey(model)
 
 	s.mu.Lock()

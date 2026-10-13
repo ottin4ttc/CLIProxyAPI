@@ -174,10 +174,12 @@ type Manager struct {
 	syncSchedulerMu           sync.Mutex
 	structuralEpoch           atomic.Uint64
 	syncedVersion             atomic.Uint64
-	auths                     map[string]*Auth
-	authEpochs                map[string]uint64
-	authChangeWatchers        map[string]map[chan struct{}]struct{}
-	scheduler                 *authScheduler
+	// bucketIndex is rebuilt under m.mu whenever m.auths changes membership.
+	bucketIndex        atomic.Pointer[bucketIndex]
+	auths              map[string]*Auth
+	authEpochs         map[string]uint64
+	authChangeWatchers map[string]map[chan struct{}]struct{}
+	scheduler          *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
@@ -274,6 +276,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
 	}
 	manager.scheduler = newAuthScheduler(selector)
+	manager.scheduler.bucketIndex = manager.loadBucketIndex
 	return manager
 }
 

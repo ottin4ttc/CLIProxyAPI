@@ -80,6 +80,9 @@ type authSelectionEligibility struct {
 	credentialPolicy string
 	disallowFreeAuth bool
 	bucket           string
+	// buckets decides per provider whether bucket applies; nil applies it
+	// to every bucket-scoped provider.
+	buckets bucketIndex
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -98,10 +101,11 @@ func credentialPolicyFromContext(ctx context.Context) string {
 	return policy
 }
 
-func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
+func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options, buckets bucketIndex) authSelectionEligibility {
 	eligibility := authSelectionEligibility{
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
 		bucket:           bucketFromMetadata(opts.Metadata),
+		buckets:          buckets,
 	}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
@@ -123,10 +127,20 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if e.disallowFreeAuth && isFreeCodexAuth(auth) {
 		return false
 	}
-	if isBucketScopedProvider(auth.Provider) && authBucket(auth) != e.bucket {
+	if isBucketScopedAuth(auth) && authBucket(auth) != e.bucketFor(auth.Provider) {
 		return false
 	}
 	return true
+}
+
+// bucketFor returns the request bucket that applies to provider. A client
+// bucket only partitions providers in which it owns OAuth credentials; for
+// other providers its keys use the unbucketed pool.
+func (e authSelectionEligibility) bucketFor(provider string) string {
+	if e.bucket == "" || e.buckets == nil || e.buckets.has(provider, e.bucket) {
+		return e.bucket
+	}
+	return ""
 }
 
 func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
@@ -1435,7 +1449,7 @@ func (m *Manager) shouldRetryAfterErrorFull(ctx context.Context, opts cliproxyex
 		}
 		return *retryAfter, true
 	}
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, m.loadBucketIndex())
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	if !isRequestRetryRoundError(err) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false
@@ -1781,7 +1795,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, m.loadBucketIndex())
 
 	m.mu.RLock()
 	selector := m.selector
@@ -2053,7 +2067,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, m.loadBucketIndex())
 	if strings.TrimSpace(model) != "" {
 		m.mu.RLock()
 		targetKey := canonicalSchedulingProvider(provider)
@@ -2111,7 +2125,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, m.loadBucketIndex())
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -2258,7 +2272,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if len(eligibleProviders) == 0 {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, m.loadBucketIndex())
 	if strings.TrimSpace(model) != "" {
 		providerSet := make(map[string]struct{}, len(eligibleProviders))
 		for _, providerKey := range eligibleProviders {
@@ -2362,7 +2376,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	now := time.Now()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts, m.loadBucketIndex())
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, p := range providers {

@@ -111,11 +111,13 @@ access:
     - "your-api-key-3"
 
 # Optional: restrict client API keys to named groups ("buckets") of codex and
-# claude accounts. Tag an account by adding a top-level "bucket" field to its
-# auth JSON file, e.g. { "bucket": "team-a", ... }. Keys listed under a bucket
-# only use codex/claude accounts tagged with that bucket name; keys not listed
-# anywhere only use untagged codex/claude accounts. A key may appear in at most
-# one bucket. Other providers are unaffected.
+# claude OAuth accounts. Tag an account by adding a top-level "bucket" field to
+# its auth JSON file, e.g. { "bucket": "team-a", ... }. Buckets apply per
+# provider: for a provider in which the bucket has tagged accounts (disabled
+# ones included), its keys only use those accounts; otherwise they use that
+# provider's untagged accounts, like keys not listed anywhere. A key may appear
+# in at most one bucket. API-key credentials (e.g. claude-api-key) and other
+# providers are shared by every key; use model-access to restrict them.
 # Bucket names are case-sensitive.
 # When Home control-plane dispatch mode is enabled, bucket filtering is not
 # enforced (selection happens remotely).

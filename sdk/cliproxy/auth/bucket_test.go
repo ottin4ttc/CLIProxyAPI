@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestAuthBucket(t *testing.T) {
 	if got := authBucket(nil); got != "" {
@@ -98,5 +101,49 @@ func TestBucketFromMetadata(t *testing.T) {
 	}
 	if got := bucketFromMetadata(map[string]any{"bucket": 7}); got != "" {
 		t.Fatalf("non-string = %q, want empty", got)
+	}
+}
+
+func TestBuildBucketIndex(t *testing.T) {
+	idx := buildBucketIndex(map[string]*Auth{
+		"codex-a":      {Provider: "codex", Metadata: map[string]any{"access_token": "t", AttributeBucket: "team-a"}},
+		"codex-off":    {Provider: "Codex", Disabled: true, Metadata: map[string]any{"access_token": "t", AttributeBucket: "team-off"}},
+		"claude-key":   {Provider: "claude", Attributes: map[string]string{"api_key": "k", AttributeBucket: "team-k"}},
+		"antigravity":  {Provider: "antigravity", Metadata: map[string]any{"access_token": "t", AttributeBucket: "team-g"}},
+		"codex-plain":  {Provider: "codex", Metadata: map[string]any{"access_token": "t"}},
+		"claude-oauth": {Provider: "claude", Metadata: map[string]any{"access_token": "t", AttributeBucket: "team-a"}},
+	})
+	for _, tc := range []struct {
+		provider, bucket string
+		want             bool
+	}{
+		{"codex", "team-a", true},
+		{"claude", "team-a", true},
+		{"codex", "team-off", true}, // disabled accounts still own their bucket
+		{"claude", "team-k", false}, // API keys are never bucketed
+		{"antigravity", "team-g", false},
+		{"claude", "team-off", false},
+	} {
+		if got := idx.has(tc.provider, tc.bucket); got != tc.want {
+			t.Errorf("has(%s, %s) = %v, want %v", tc.provider, tc.bucket, got, tc.want)
+		}
+	}
+}
+
+func TestManagerBucketIndexTracksRegisterAndRemove(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	if manager.loadBucketIndex() != nil {
+		t.Fatal("bucket index must be nil before any auth is registered")
+	}
+	tagged := &Auth{ID: "codex-a", Provider: "codex", Metadata: map[string]any{"access_token": "t", AttributeBucket: "team-a"}}
+	if _, errRegister := manager.Register(context.Background(), tagged); errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	if !manager.loadBucketIndex().has("codex", "team-a") {
+		t.Fatal("bucket index must include team-a after Register")
+	}
+	manager.Remove(context.Background(), "codex-a")
+	if manager.loadBucketIndex().has("codex", "team-a") {
+		t.Fatal("bucket index must drop team-a after Remove")
 	}
 }

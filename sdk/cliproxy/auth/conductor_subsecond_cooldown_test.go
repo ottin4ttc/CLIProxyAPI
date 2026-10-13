@@ -226,7 +226,7 @@ func TestClosestCooldownWaitWithAttempted_ExpiredCooldownDoesNotTriggerZeroWaitF
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
-	eligibility := authSelectionEligibilityForRequest(context.Background(), cliproxyexecutor.Options{})
+	eligibility := authSelectionEligibilityForRequest(context.Background(), cliproxyexecutor.Options{}, nil)
 
 	// Case 1: auth was NOT attempted in the failed round (untried credential).
 	// Because its cooldown is expired, it should be immediately available (wait = 0, found = true).
@@ -434,7 +434,7 @@ func TestClosestCooldownWaitWithAttempted_RespectsManagerAndProviderCoolingOverr
 	}
 
 	attempted := map[string]struct{}{auth.ID: {}}
-	eligibility := authSelectionEligibilityForRequest(context.Background(), cliproxyexecutor.Options{})
+	eligibility := authSelectionEligibilityForRequest(context.Background(), cliproxyexecutor.Options{}, nil)
 
 	// 1. Without provider override (cooling enabled): attempted auth after 429 enforces wait >= 10s.
 	wait, found := manager.closestCooldownWaitWithAttempted([]string{"openai-compatibility"}, model, 0, eligibility, "", 5, http.StatusTooManyRequests, attempted)

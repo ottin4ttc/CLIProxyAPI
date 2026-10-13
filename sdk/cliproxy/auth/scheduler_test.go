@@ -1575,13 +1575,15 @@ func TestManagerSelectAuthByKindBucketRestrictsToSameBucket(t *testing.T) {
 }
 
 // TestManagerSelectAuthByKindBucketExhaustedReturnsNotFound covers spec
-// requirement 2 (strict isolation): when the requested bucket has no
-// available codex auth, selection must return the existing "no available
-// credentials" style error rather than borrowing an out-of-bucket auth.
+// requirement 2 (strict isolation): when the requested bucket owns codex
+// auths but none is available (here: all disabled), selection must return
+// the existing "no available credentials" style error rather than borrowing
+// an out-of-bucket auth.
 func TestManagerSelectAuthByKindBucketExhaustedReturnsNotFound(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["codex"] = schedulerTestExecutor{}
 	for _, candidate := range []*Auth{
+		{ID: "team-a-disabled", Provider: "codex", Disabled: true, Status: StatusDisabled, Metadata: map[string]any{"access_token": "token-a1", AttributeBucket: "team-a"}},
 		{ID: "team-b-1", Provider: "codex", Metadata: map[string]any{"access_token": "token-b1", AttributeBucket: "team-b"}},
 		{ID: "default-1", Provider: "codex", Metadata: map[string]any{"access_token": "token-default"}},
 	} {
@@ -1598,6 +1600,69 @@ func TestManagerSelectAuthByKindBucketExhaustedReturnsNotFound(t *testing.T) {
 	var authErr *Error
 	if !errors.As(errSelect, &authErr) || authErr.Code != "auth_not_found" {
 		t.Fatalf("SelectAuthByKind() error = %#v, want auth_not_found", errSelect)
+	}
+}
+
+// TestManagerSelectAuthBucketIsPerProvider asserts that a bucket only
+// partitions providers in which it owns OAuth auths: a key whose bucket has
+// codex auths only uses the unbucketed claude OAuth pool, and claude API-key
+// credentials are shared by every key regardless of bucket.
+func TestManagerSelectAuthBucketIsPerProvider(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["codex"] = schedulerTestExecutor{}
+	manager.executors["claude"] = schedulerTestExecutor{}
+	for _, candidate := range []*Auth{
+		{ID: "codex-team-a", Provider: "codex", Metadata: map[string]any{"access_token": "token-ca", AttributeBucket: "team-a"}},
+		{ID: "codex-default", Provider: "codex", Metadata: map[string]any{"access_token": "token-cd"}},
+		{ID: "claude-team-b", Provider: "claude", Metadata: map[string]any{"access_token": "token-lb", AttributeBucket: "team-b"}},
+		{ID: "claude-default", Provider: "claude", Metadata: map[string]any{"access_token": "token-ld"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", candidate.ID, errRegister)
+		}
+	}
+
+	teamA := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.BucketMetadataKey: "team-a"}}
+	teamB := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.BucketMetadataKey: "team-b"}}
+	cases := []struct {
+		name     string
+		provider string
+		opts     cliproxyexecutor.Options
+		want     string
+	}{
+		{name: "team-a codex stays in bucket", provider: "codex", opts: teamA, want: "codex-team-a"},
+		{name: "team-a claude uses default pool", provider: "claude", opts: teamA, want: "claude-default"},
+		{name: "team-b claude stays in bucket", provider: "claude", opts: teamB, want: "claude-team-b"},
+		{name: "team-b codex uses default pool", provider: "codex", opts: teamB, want: "codex-default"},
+	}
+	for _, tc := range cases {
+		for index := 0; index < 4; index++ {
+			selected, errSelect := manager.SelectAuth(context.Background(), tc.provider, "", tc.opts)
+			if errSelect != nil {
+				t.Fatalf("%s: SelectAuth() error = %v", tc.name, errSelect)
+			}
+			if selected == nil || selected.ID != tc.want {
+				t.Fatalf("%s: SelectAuth() picked %#v, want %s", tc.name, selected, tc.want)
+			}
+		}
+	}
+
+	// A claude API key is never bucketed, so team-b now sees it next to its OAuth auth.
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "claude-apikey", Provider: "claude", Attributes: map[string]string{"api_key": "sk-claude", AttributeBucket: "team-b"}}); errRegister != nil {
+		t.Fatalf("Register(claude-apikey) error = %v", errRegister)
+	}
+	for _, opts := range []cliproxyexecutor.Options{teamA, teamB, {}} {
+		seen := make(map[string]int)
+		for index := 0; index < 8; index++ {
+			selected, errSelect := manager.SelectAuth(context.Background(), "claude", "", opts)
+			if errSelect != nil {
+				t.Fatalf("SelectAuth(%v) error = %v", opts.Metadata, errSelect)
+			}
+			seen[selected.ID]++
+		}
+		if seen["claude-apikey"] == 0 {
+			t.Fatalf("SelectAuth(%v) never picked the claude API key, got %#v", opts.Metadata, seen)
+		}
 	}
 }
 
