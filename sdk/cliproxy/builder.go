@@ -332,6 +332,7 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 		// claimed this revision, handleAuthUpdate waits for that registration to finish.
 		syncCtx := coreauth.WithSkipPersist(context.Background())
 		s.handleAuthUpdate(syncCtx, update)
+		s.reconcilePersistedFileAuth(syncCtx, auth)
 		return nil
 	}
 }
