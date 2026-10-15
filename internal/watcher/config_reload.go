@@ -49,6 +49,11 @@ func (w *Watcher) ReloadConfigIfChanged() {
 }
 
 func (w *Watcher) reloadConfigIfChanged() {
+	// Management saves reload synchronously while file events reload from a
+	// debounce timer; overlapping runs could publish an older config last.
+	w.configReloadRunMu.Lock()
+	defer w.configReloadRunMu.Unlock()
+
 	data, err := os.ReadFile(w.configPath)
 	if err != nil {
 		log.Errorf("failed to read config file for hash check: %v", err)
@@ -71,16 +76,19 @@ func (w *Watcher) reloadConfigIfChanged() {
 	}
 	log.Infof("config file changed, reloading: %s", w.configPath)
 	if w.reloadConfig() {
-		finalHash := newHash
+		// Record the hash read before loading. The file may have changed since,
+		// either written back by LoadConfig or by a concurrent writer; recording
+		// a re-read hash would mark such a write as loaded and skip it forever.
+		w.clientsMutex.Lock()
+		w.lastConfigHash = newHash
+		w.clientsMutex.Unlock()
 		if updatedData, errRead := os.ReadFile(w.configPath); errRead == nil && len(updatedData) > 0 {
-			sumUpdated := sha256.Sum256(updatedData)
-			finalHash = hex.EncodeToString(sumUpdated[:])
+			if sumUpdated := sha256.Sum256(updatedData); hex.EncodeToString(sumUpdated[:]) != newHash {
+				w.scheduleConfigReload()
+			}
 		} else if errRead != nil {
 			log.WithError(errRead).Debug("failed to compute updated config hash after reload")
 		}
-		w.clientsMutex.Lock()
-		w.lastConfigHash = finalHash
-		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
 	}
 }

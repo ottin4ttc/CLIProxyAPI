@@ -38,6 +38,7 @@ type Watcher struct {
 	authRescanMu      sync.Mutex
 	configReloadMu    sync.Mutex
 	configReloadTimer *time.Timer
+	configReloadRunMu sync.Mutex // Serializes reloadConfigIfChanged runs.
 	serverUpdateMu    sync.Mutex
 	serverUpdateTimer *time.Timer
 	serverUpdateLast  time.Time

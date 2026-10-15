@@ -230,6 +230,56 @@ func TestReloadConfigIfChanged_TriggersOnChangeAndSkipsUnchanged(t *testing.T) {
 	}
 }
 
+func TestReloadConfigIfChanged_DoesNotSkipWriteDuringReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	writeConfig := func(port int) {
+		data, err := yaml.Marshal(&config.Config{
+			Port:               port,
+			AuthDir:            authDir,
+			CredentialInFlight: config.DefaultCredentialInFlightConfig(),
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal config: %v", err)
+		}
+		if err = os.WriteFile(configPath, data, 0o644); err != nil {
+			t.Fatalf("failed to write config: %v", err)
+		}
+	}
+	writeConfig(8080)
+
+	var ports []int
+	w := &Watcher{configPath: configPath, authDir: authDir}
+	t.Cleanup(w.stopConfigReloadTimer)
+	w.reloadCallback = func(cfg *config.Config) {
+		ports = append(ports, cfg.Port)
+		if len(ports) == 1 {
+			// A management save landing while the first reload is still running.
+			writeConfig(9090)
+		}
+	}
+
+	w.reloadConfigIfChanged()
+	w.configReloadMu.Lock()
+	followUpScheduled := w.configReloadTimer != nil
+	w.configReloadMu.Unlock()
+	if !followUpScheduled {
+		t.Fatal("expected a follow-up reload to be scheduled for the newer file content")
+	}
+	w.stopConfigReloadTimer()
+
+	// The check triggered by the concurrent write must not treat it as already loaded.
+	w.reloadConfigIfChanged()
+	if len(ports) != 2 || ports[1] != 9090 {
+		t.Fatalf("expected the concurrent write to be reloaded, got ports %v", ports)
+	}
+}
+
 func TestStartAndStopSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")
