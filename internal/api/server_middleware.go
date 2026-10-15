@@ -352,7 +352,8 @@ func rpmLimitExemptPath(method, path string) bool {
 // counts, on either transport.
 func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s == nil || s.rpmLimiter == nil || s.cfg == nil || c.Request == nil || c.Request.URL == nil {
+		cfg := s.getConfig()
+		if s == nil || s.rpmLimiter == nil || cfg == nil || c.Request == nil || c.Request.URL == nil {
 			c.Next()
 			return
 		}
@@ -375,7 +376,7 @@ func (s *Server) rpmLimitMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		limit := s.cfg.RPMLimitForAPIKey(key)
+		limit := cfg.RPMLimitForAPIKey(key)
 		ok, retryAfter := s.rpmLimiter.Allow(key, limit, time.Now())
 		if ok {
 			c.Next()

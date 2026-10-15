@@ -375,14 +375,15 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
 // when bucket-model-routes has a rule for the client API key's bucket.
 // Requests without an authenticated client API key are never rewritten.
 func (h *BaseAPIHandler) bucketModelRoute(ctx context.Context, modelName string) modelRouteDecision {
-	if h == nil || h.Cfg == nil || !h.Cfg.BucketModelRoutes.Enabled || ctx == nil {
+	cfg := h.CurrentConfig()
+	if cfg == nil || !cfg.BucketModelRoutes.Enabled || ctx == nil {
 		return modelRouteDecision{}
 	}
 	ginCtx, _ := ctx.Value("gin").(*gin.Context)
 	if requestAPIKey(ginCtx) == "" {
 		return modelRouteDecision{}
 	}
-	provider, target, ok := h.Cfg.BucketModelRoute(requestBucket(ginCtx, h.Cfg), modelName)
+	provider, target, ok := cfg.BucketModelRoute(requestBucket(ginCtx, cfg), modelName)
 	if !ok {
 		return modelRouteDecision{}
 	}
@@ -395,7 +396,7 @@ func (h *BaseAPIHandler) applyPluginModelRouter(ctx context.Context, handlerType
 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
 		return decision
 	}
-	meta := requestExecutionMetadata(ctx, h.Cfg)
+	meta := requestExecutionMetadata(ctx, h.CurrentConfig())
 	meta[coreexecutor.RequestedModelMetadataKey] = modelName
 	addModelExecutionSourceMetadata(meta, execOptions.InternalSource)
 	resp, ok := routeModel(ctx, host, pluginapi.ModelRouteRequest{

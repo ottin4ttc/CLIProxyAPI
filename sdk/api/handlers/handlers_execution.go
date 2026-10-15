@@ -46,7 +46,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
-	if errMsg := modelAccessError(ctx, h.Cfg, originalRequestedModel); errMsg != nil {
+	if errMsg := modelAccessError(ctx, h.CurrentConfig(), originalRequestedModel); errMsg != nil {
 		publishPreUpstreamFailure(ctx, nil, originalRequestedModel, nil, errMsg, execOptions.InternalSource)
 		return nil, nil, errMsg
 	}
@@ -66,7 +66,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
-	reqMeta := requestExecutionMetadata(ctx, h.Cfg)
+	reqMeta := requestExecutionMetadata(ctx, h.CurrentConfig())
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}
@@ -137,7 +137,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 
 func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
-	if errMsg := modelAccessError(ctx, h.Cfg, originalRequestedModel); errMsg != nil {
+	if errMsg := modelAccessError(ctx, h.CurrentConfig(), originalRequestedModel); errMsg != nil {
 		return nil, nil, errMsg
 	}
 	routeDecision := h.applyModelRouter(ctx, handlerType, modelName, rawJSON, false, execOptions)
@@ -149,7 +149,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(handlerType, providers)
-	reqMeta := requestExecutionMetadata(ctx, h.Cfg)
+	reqMeta := requestExecutionMetadata(ctx, h.CurrentConfig())
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
@@ -289,7 +289,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 }
 
 func (h *BaseAPIHandler) pluginExecutorRequest(ctx context.Context, entryProtocol, responseProtocol, modelName, originalRequestedModel string, rawJSON []byte, alt string, stream bool, execOptions modelExecutionOptions) (coreexecutor.Request, coreexecutor.Options) {
-	reqMeta := requestExecutionMetadata(ctx, h.Cfg)
+	reqMeta := requestExecutionMetadata(ctx, h.CurrentConfig())
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

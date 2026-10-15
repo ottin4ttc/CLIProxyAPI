@@ -49,13 +49,14 @@ func modelAccessError(ctx context.Context, cfg *config.SDKConfig, model string) 
 // use under model-access rules. It returns models unchanged when rules are
 // disabled, so model listings only pay for the filter when it is on.
 func (h *BaseAPIHandler) FilterModelsForRequest(c *gin.Context, models []map[string]any) []map[string]any {
-	if h == nil || h.Cfg == nil || !h.Cfg.ModelAccess.Enabled {
+	cfg := h.CurrentConfig()
+	if cfg == nil || !cfg.ModelAccess.Enabled {
 		return models
 	}
 	apiKey := requestAPIKey(c)
 	filtered := make([]map[string]any, 0, len(models))
 	for _, model := range models {
-		if h.Cfg.ModelAccessAllowed(apiKey, modelListEntryID(model)) {
+		if cfg.ModelAccessAllowed(apiKey, modelListEntryID(model)) {
 			filtered = append(filtered, model)
 		}
 	}

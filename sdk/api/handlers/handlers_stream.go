@@ -283,7 +283,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
-	if errMsg := modelAccessError(ctx, h.Cfg, originalRequestedModel); errMsg != nil {
+	if errMsg := modelAccessError(ctx, h.CurrentConfig(), originalRequestedModel); errMsg != nil {
 		publishPreUpstreamFailure(coreusage.WithStream(ctx, true), nil, originalRequestedModel, nil, errMsg, execOptions.InternalSource)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -315,7 +315,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
-	reqMeta := requestExecutionMetadata(ctx, h.Cfg)
+	reqMeta := requestExecutionMetadata(ctx, h.CurrentConfig())
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

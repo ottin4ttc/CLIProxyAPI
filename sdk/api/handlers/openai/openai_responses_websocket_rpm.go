@@ -59,14 +59,18 @@ func responsesWebsocketAPIKey(c *gin.Context) string {
 // error the caller should write to the client before continuing the read
 // loop without dispatching. A nil return means the caller may proceed.
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketRPMLimitReject(c *gin.Context) *interfaces.ErrorMessage {
-	if h == nil || h.Cfg == nil {
+	if h == nil {
+		return nil
+	}
+	cfg := h.CurrentConfig()
+	if cfg == nil {
 		return nil
 	}
 	key := responsesWebsocketAPIKey(c)
 	if key == "" {
 		return nil
 	}
-	limit := h.Cfg.RPMLimitForAPIKey(key)
+	limit := cfg.RPMLimitForAPIKey(key)
 	ok, retryAfter := responsesWebsocketRPMDecision(apikeylimit.Default(), key, limit, time.Now())
 	if ok {
 		return nil

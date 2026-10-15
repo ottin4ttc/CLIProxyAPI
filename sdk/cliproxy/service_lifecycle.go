@@ -94,12 +94,12 @@ func (s *Service) Run(ctx context.Context) error {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
 			}
 		}
-		if s.cfg.SaveHealthRing {
+		if cfg != nil && cfg.SaveHealthRing {
 			// Startup only by design: not wired into the hot config reload path.
-			if authDir, errAuthDir := resolveCooldownStateAuthDir(s.cfg); errAuthDir != nil {
+			if authDir, errAuthDir := resolveCooldownStateAuthDir(cfg); errAuthDir != nil {
 				log.Warnf("failed to resolve health ring directory: %v", errAuthDir)
 			} else if authDir != "" {
-				s.coreManager.SetHealthRingStore(coreauth.NewFileHealthRingStore(authDir, s.cfg.Port))
+				s.coreManager.SetHealthRingStore(coreauth.NewFileHealthRingStore(authDir, cfg.Port))
 				if errRestoreRing := s.coreManager.RestoreHealthRings(ctx); errRestoreRing != nil {
 					log.Warnf("failed to restore health ring: %v", errRestoreRing)
 				}

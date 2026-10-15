@@ -359,14 +359,15 @@ func homeSelectionAttemptContext(ctx context.Context, selection *auth.HomeDispat
 // so codex-only side channels that bypass that pipeline (e.g. the Codex
 // Alpha Search endpoint below) still honor bucket routing.
 func (s *Server) bucketForContext(c *gin.Context) string {
-	if s == nil || s.cfg == nil || c == nil {
+	cfg := s.getConfig()
+	if cfg == nil || c == nil {
 		return ""
 	}
 	value, exists := c.Get("userApiKey")
 	if !exists {
 		return ""
 	}
-	return s.cfg.BucketForContextValue(value)
+	return cfg.BucketForContextValue(value)
 }
 
 // codexAlphaSearch forwards the standalone search endpoint used by current
@@ -714,7 +715,8 @@ func (s *Server) handleGrokModels(c *gin.Context) {
 // filterGrokModelsForRequest applies model-access rules to the Grok shell
 // model list, mirroring BaseAPIHandler.FilterModelsForRequest.
 func (s *Server) filterGrokModelsForRequest(c *gin.Context, models []grokbuild.ModelInfo) []grokbuild.ModelInfo {
-	if s == nil || s.cfg == nil || !s.cfg.ModelAccess.Enabled || c == nil {
+	cfg := s.getConfig()
+	if cfg == nil || !cfg.ModelAccess.Enabled || c == nil {
 		return models
 	}
 	apiKey := ""
@@ -723,7 +725,7 @@ func (s *Server) filterGrokModelsForRequest(c *gin.Context, models []grokbuild.M
 	}
 	filtered := make([]grokbuild.ModelInfo, 0, len(models))
 	for _, model := range models {
-		if s.cfg.ModelAccessAllowed(apiKey, model.ID) {
+		if cfg.ModelAccessAllowed(apiKey, model.ID) {
 			filtered = append(filtered, model)
 		}
 	}
