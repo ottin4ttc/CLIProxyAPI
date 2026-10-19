@@ -530,3 +530,21 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 	}
 	return out
 }
+
+// SanitizeWebTools trims the Search/Fetch gateway settings and clamps the
+// configured result count into the upstream's accepted range.
+func (cfg *Config) SanitizeWebTools() {
+	if cfg == nil {
+		return
+	}
+	gateway := &cfg.WebTools
+	gateway.BaseURL = strings.TrimSpace(gateway.BaseURL)
+	gateway.APIKey = strings.TrimSpace(gateway.APIKey)
+	gateway.Credential = strings.TrimSpace(gateway.Credential)
+	switch {
+	case gateway.Count < 0:
+		gateway.Count = 0
+	case gateway.Count > 50:
+		gateway.Count = 50
+	}
+}

@@ -11,6 +11,7 @@ var forkConfigRoots = []string{
 	"credential-max-inflight",
 	"save-health-ring",
 	"conversation-store",
+	"web-tools",
 }
 
 // forkExternalConfigRoots are fork roots read straight from the config file

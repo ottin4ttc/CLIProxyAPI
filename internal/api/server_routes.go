@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/webtools"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/gemini"
@@ -115,6 +116,17 @@ func (s *Server) setupRoutes() {
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
 		openaiV1.GET("/videos/:video_id", openaiHandlers.VideosRetrieve)
+	}
+
+	// Search/Fetch API gateway. Search and Fetch are billed per successful
+	// request, not per token, so these routes are authenticated but deliberately
+	// excluded from client RPM accounting.
+	webToolsHandler := webtools.NewHandler(s.getConfig)
+	toolsV1 := s.engine.Group("/v1/tools")
+	toolsV1.Use(AuthMiddleware(s.accessManager))
+	{
+		toolsV1.POST("/search", webToolsHandler.Search)
+		toolsV1.POST("/fetch", webToolsHandler.Fetch)
 	}
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)

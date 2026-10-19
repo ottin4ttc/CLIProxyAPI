@@ -36,6 +36,11 @@ conversation-store:
   enabled: true
   data-dir: /tmp/convstore
   retention-days: 7
+web-tools:
+  enabled: true
+  base-url: https://api.deepseek.com/v1/tools
+  credential: deepseek
+  count: 8
 `
 
 func TestForkRootsDoNotMarkLegacyConfigAsV8(t *testing.T) {
@@ -97,5 +102,8 @@ func TestV8MigrationKeepsForkRoots(t *testing.T) {
 	}
 	if !cfg.SaveHealthRing {
 		t.Fatal("save-health-ring was lost")
+	}
+	if !cfg.WebTools.Enabled || cfg.WebTools.Credential != "deepseek" || cfg.WebTools.Count != 8 {
+		t.Fatalf("web-tools = %+v", cfg.WebTools)
 	}
 }

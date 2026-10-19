@@ -171,6 +171,28 @@ access:
 #       provider: antigravity
 #       to: gemini-3.8-flash-high
 
+# Optional: Search/Fetch API gateway. Off by default. When enabled, this proxy
+# exposes POST /v1/tools/search and POST /v1/tools/fetch, authenticated with the
+# same client API keys as every other endpoint, and forwards each call to a
+# DeepSeek-compatible web API so client tooling shares one upstream credential
+# instead of holding its own key. Upstream status codes and bodies pass through
+# unchanged (401, 402, 429, 5xx for fetch/search failures). Search and Fetch are
+# billed per successful request upstream, so these routes are not counted against
+# api-key-limits.
+# web-tools:
+#   enabled: false
+#   # Upstream base URL; "/search" and "/fetch" are appended. Defaults to
+#   # https://api.deepseek.com/v1/tools.
+#   base-url: "https://api.deepseek.com/v1/tools"
+#   # Literal upstream key, or borrow one from an openai-compatibility entry by
+#   # name (its first usable api-key-entries key is used).
+#   # api-key: "sk-xxx"
+#   credential: "deepseek"
+#   # Result count applied only when the caller omits "count". Clamped to 1..50.
+#   count: 10
+#   # Send need_content=true when the caller omits it (returns page bodies).
+#   need-content: false
+
 # Optional credential concurrency and observation contracts.
 
 # credentials:

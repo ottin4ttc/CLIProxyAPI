@@ -100,6 +100,9 @@ type SDKConfig struct {
 	// ModelAccess restricts models matching a rule to that rule's client API keys.
 	ModelAccess ModelAccess `yaml:"model-access" json:"model-access"`
 
+	// WebTools configures the Search/Fetch API gateway exposed under /v1/tools.
+	WebTools WebTools `yaml:"web-tools" json:"web-tools"`
+
 	// BucketModelRoutes rewrites a requested model to another provider's
 	// model for client API keys in a given bucket.
 	BucketModelRoutes BucketModelRoutes `yaml:"bucket-model-routes" json:"bucket-model-routes"`
@@ -426,6 +429,37 @@ type ModelAccess struct {
 
 	// Rules lists model patterns and the client API keys allowed to use them.
 	Rules []ModelAccessRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// WebTools configures the Search/Fetch API gateway exposed under /v1/tools.
+// The gateway forwards to a DeepSeek-compatible Search/Fetch API
+// (POST {base-url}/search and POST {base-url}/fetch) so client tooling can
+// share one upstream credential instead of holding its own key.
+type WebTools struct {
+	// Enabled exposes the gateway. When false the routes answer 404, so a
+	// deployment that does not need the gateway is indistinguishable from one
+	// that never registered it.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// BaseURL is the upstream base URL including its path prefix; "/search"
+	// and "/fetch" are appended. Defaults to the DeepSeek Search/Fetch API.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// APIKey is a literal upstream API key. When empty, Credential selects an
+	// openai-compatibility entry whose api-key-entries supply the key.
+	APIKey string `yaml:"api-key,omitempty" json:"api-key,omitempty"`
+
+	// Credential names an openai-compatibility entry to borrow the upstream
+	// key from. The first api-key-entry with a usable key is used.
+	Credential string `yaml:"credential,omitempty" json:"credential,omitempty"`
+
+	// Count is the result count applied when the client omits "count".
+	// Values outside 1..50 are clamped.
+	Count int `yaml:"count,omitempty" json:"count,omitempty"`
+
+	// NeedContent applies need_content=true when the client omits it, so
+	// results carry page bodies instead of summaries only.
+	NeedContent bool `yaml:"need-content,omitempty" json:"need-content,omitempty"`
 }
 
 // ModelAccessRule allows only APIKeys to use models matching any of Models.
