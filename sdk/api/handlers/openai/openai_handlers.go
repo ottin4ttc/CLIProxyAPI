@@ -81,7 +81,9 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Get all available models
 	allModels := h.FilterModelsForRequest(c, h.Models())
 
-	// Filter to only include the 4 required fields: id, object, created, owned_by
+	// Filter to the required fields: id, object, created, owned_by, plus an
+	// optional display_name. Internal metadata such as metadata_model_id stays
+	// out of the response.
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -97,6 +99,12 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		// Add owned_by field if it exists
 		if ownedBy, exists := model["owned_by"]; exists {
 			filteredModel["owned_by"] = ownedBy
+		}
+
+		// Expose a configured human-readable name only when it differs from the
+		// id, so unconfigured models do not repeat their id here.
+		if displayName, ok := model["display_name"].(string); ok && displayName != "" && displayName != fmt.Sprint(model["id"]) {
+			filteredModel["display_name"] = displayName
 		}
 
 		filteredModels[i] = filteredModel
