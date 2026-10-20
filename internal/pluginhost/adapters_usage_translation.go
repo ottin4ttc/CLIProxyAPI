@@ -222,6 +222,8 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			CacheReadTokens:     record.Detail.CacheReadTokens,
 			CacheCreationTokens: record.Detail.CacheCreationTokens,
 			TotalTokens:         record.Detail.TotalTokens,
+			WebSearchRequests:   record.Detail.WebSearchRequests,
+			WebFetchRequests:    record.Detail.WebFetchRequests,
 		},
 		ResponseHeaders: cloneHeader(record.ResponseHeaders),
 	})

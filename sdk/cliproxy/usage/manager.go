@@ -89,6 +89,12 @@ type Detail struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	// WebSearchRequests is the number of metered web searches reported by the
+	// upstream (for example usage.server_tool_use.web_search_requests).
+	WebSearchRequests int64
+	// WebFetchRequests is the number of metered web fetches reported by the
+	// upstream (for example usage.server_tool_use.web_fetch_requests).
+	WebFetchRequests    int64
 	TokenBreakdown      TokenBreakdown
 	ResponseServiceTier string
 }

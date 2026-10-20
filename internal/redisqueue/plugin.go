@@ -169,6 +169,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
 		ResponseModel:       responseModel,
+		WebSearchRequests:   usageDetail.WebSearchRequests,
+		WebFetchRequests:    usageDetail.WebFetchRequests,
 	})
 	if err != nil {
 		return
@@ -201,6 +203,10 @@ type queuedUsageDetail struct {
 	ServiceTier         string                   `json:"service_tier"`
 	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
 	ResponseModel       string                   `json:"response_model,omitempty"`
+	// WebSearchRequests and WebFetchRequests carry non-token metered tool calls.
+	// They are omitted when zero so existing consumers see no change.
+	WebSearchRequests int64 `json:"web_search_requests,omitempty"`
+	WebFetchRequests  int64 `json:"web_fetch_requests,omitempty"`
 }
 
 type requestDetail struct {

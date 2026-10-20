@@ -413,6 +413,39 @@ func TestParseClaudeUsageFallsBackToTopLevelThinkingTokens(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsageReadsServerToolUse(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":10,"output_tokens":2,"server_tool_use":{"web_search_requests":3,"web_fetch_requests":1}}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.WebSearchRequests != 3 || detail.WebFetchRequests != 1 {
+		t.Fatalf("server tool use = search %d fetch %d, want 3/1", detail.WebSearchRequests, detail.WebFetchRequests)
+	}
+}
+
+func TestParseClaudeStreamUsageReadsServerToolUseFromMessageStart(t *testing.T) {
+	line := []byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"server_tool_use":{"web_search_requests":1}}}}`)
+	detail, ok := ParseClaudeStreamUsage(line)
+	if !ok {
+		t.Fatal("expected stream usage to parse from message_start")
+	}
+	if detail.WebSearchRequests != 1 || detail.WebFetchRequests != 0 {
+		t.Fatalf("server tool use = %+v, want search 1 fetch 0", detail)
+	}
+}
+
+func TestMergeStreamUsageDetailKeepsCumulativeServerToolUse(t *testing.T) {
+	existing := usage.Detail{WebSearchRequests: 2, WebFetchRequests: 1}
+	update := usage.Detail{OutputTokens: 5}
+	merged := MergeStreamUsageDetail(existing, update)
+	if merged.WebSearchRequests != 2 || merged.WebFetchRequests != 1 {
+		t.Fatalf("merged server tool use = search %d fetch %d, want 2/1", merged.WebSearchRequests, merged.WebFetchRequests)
+	}
+
+	newer := MergeStreamUsageDetail(merged, usage.Detail{WebSearchRequests: 3})
+	if newer.WebSearchRequests != 3 {
+		t.Fatalf("web search requests = %d, want the cumulative 3", newer.WebSearchRequests)
+	}
+}
+
 func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":4,"totalTokenCount":12}}`))
 	if detail.CachedTokens != 4 {

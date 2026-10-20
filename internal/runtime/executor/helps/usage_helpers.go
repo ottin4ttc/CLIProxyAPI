@@ -1193,6 +1193,14 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		// is inconsistent.
 		nonReasoningOutput = 0
 	}
+	webSearchRequests := usageNode.Get("server_tool_use.web_search_requests").Int()
+	if webSearchRequests < 0 {
+		webSearchRequests = 0
+	}
+	webFetchRequests := usageNode.Get("server_tool_use.web_fetch_requests").Int()
+	if webFetchRequests < 0 {
+		webFetchRequests = 0
+	}
 	detail := usage.Detail{
 		InputTokens:         usageNode.Get("input_tokens").Int(),
 		OutputTokens:        rawOutputTokens,
@@ -1200,6 +1208,8 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
+		WebSearchRequests:   webSearchRequests,
+		WebFetchRequests:    webFetchRequests,
 	}
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = detail.CacheCreationTokens

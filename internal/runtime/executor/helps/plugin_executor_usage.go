@@ -184,6 +184,14 @@ func MergeStreamUsageDetail(existing, update usage.Detail) usage.Detail {
 	if merged.ResponseServiceTier == "" {
 		merged.ResponseServiceTier = existing.ResponseServiceTier
 	}
+	// Server-tool counters are cumulative in Claude stream deltas; keep the
+	// highest value seen so a usage-only delta cannot reset an earlier count.
+	if merged.WebSearchRequests < existing.WebSearchRequests {
+		merged.WebSearchRequests = existing.WebSearchRequests
+	}
+	if merged.WebFetchRequests < existing.WebFetchRequests {
+		merged.WebFetchRequests = existing.WebFetchRequests
+	}
 	cached := merged.CacheReadTokens + merged.CacheCreationTokens
 	if cached == 0 {
 		cached = merged.CachedTokens

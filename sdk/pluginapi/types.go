@@ -1571,6 +1571,10 @@ type UsageDetail struct {
 	CacheCreationTokens int64
 	// TotalTokens is the total token count.
 	TotalTokens int64
+	// WebSearchRequests is the number of metered web searches reported by the upstream.
+	WebSearchRequests int64
+	// WebFetchRequests is the number of metered web fetches reported by the upstream.
+	WebFetchRequests int64
 }
 
 // QuotaProvider surfaces credential quota, balance, and billing information for management clients.
