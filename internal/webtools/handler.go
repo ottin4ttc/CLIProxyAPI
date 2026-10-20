@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -82,6 +86,44 @@ func (h *Handler) forward(c *gin.Context, operation string, call func(*Client, [
 	if len(respBody) > 0 {
 		_, _ = c.Writer.Write(respBody)
 	}
+	publishWebToolUsage(c, cfg, operation, status)
+}
+
+// publishWebToolUsage records one billable Search/Fetch call. The upstream bills
+// successful requests only, so non-2xx responses publish nothing.
+func publishWebToolUsage(c *gin.Context, cfg *config.Config, operation string, status int) {
+	if c == nil || c.Request == nil || status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return
+	}
+	ctx := c.Request.Context()
+	if endpoint := strings.TrimSpace(c.FullPath()); endpoint != "" {
+		ctx = logging.WithEndpoint(ctx, endpoint)
+	}
+	ctx = logging.WithClientRequestMetadata(ctx, logging.ClientRequestMetadata{
+		ClientIP:      c.ClientIP(),
+		XForwardedFor: strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
+		UserAgent:     strings.TrimSpace(c.Request.UserAgent()),
+	})
+
+	provider := "web-tools"
+	model := "deepseek-search"
+	detail := usage.Detail{WebSearchRequests: 1}
+	if cfg != nil {
+		if name := strings.TrimSpace(cfg.WebTools.Credential); name != "" {
+			provider = name
+		}
+	}
+	if operation == "fetch" {
+		model = "deepseek-fetch"
+		detail = usage.Detail{WebFetchRequests: 1}
+	}
+	usage.PublishRecord(ctx, usage.Record{
+		Provider:     provider,
+		ExecutorType: "WebToolsGateway",
+		Model:        model,
+		RequestedAt:  time.Now(),
+		Detail:       detail,
+	})
 }
 
 // writeError answers with the OpenAI-compatible error envelope the upstream

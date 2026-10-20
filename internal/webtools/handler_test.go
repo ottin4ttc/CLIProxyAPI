@@ -1,15 +1,51 @@
 package webtools
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
+
+type webToolsUsageCapture struct {
+	records chan coreusage.Record
+}
+
+type webToolsUsageNoop struct{}
+
+func (webToolsUsageNoop) HandleUsage(context.Context, coreusage.Record) {}
+
+func (c *webToolsUsageCapture) HandleUsage(_ context.Context, record coreusage.Record) {
+	c.records <- record
+}
+
+func registerWebToolsUsageCapture(t *testing.T) *webToolsUsageCapture {
+	t.Helper()
+	capture := &webToolsUsageCapture{records: make(chan coreusage.Record, 4)}
+	name := "webtools-test-" + t.Name()
+	coreusage.RegisterNamedPlugin(name, capture)
+	t.Cleanup(func() { coreusage.RegisterNamedPlugin(name, webToolsUsageNoop{}) })
+	coreusage.StartDefault(context.Background())
+	return capture
+}
+
+func awaitWebToolsRecord(t *testing.T, capture *webToolsUsageCapture) coreusage.Record {
+	t.Helper()
+	select {
+	case record := <-capture.records:
+		return record
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a usage record")
+		return coreusage.Record{}
+	}
+}
 
 func newTestRouter(cfg *config.Config) *gin.Engine {
 	gin.SetMode(gin.TestMode)
@@ -79,6 +115,59 @@ func TestGatewayPassesUpstreamSuccessThrough(t *testing.T) {
 	}
 	if len(decoded.Results) != 1 || decoded.Results[0].URL != "https://example.com" {
 		t.Fatalf("unexpected results: %s", rec.Body.String())
+	}
+}
+
+func TestGatewayPublishesSuccessfulSearchUsage(t *testing.T) {
+	capture := registerWebToolsUsageCapture(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{SDKConfig: config.SDKConfig{WebTools: config.WebTools{
+		Enabled: true, BaseURL: upstream.URL, APIKey: "k", Credential: "deepseek",
+	}}}
+	router := newTestRouter(cfg)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/tools/search", strings.NewReader(`{"query":"x"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	record := awaitWebToolsRecord(t, capture)
+	if record.Model != "deepseek-search" || record.Provider != "deepseek" || record.ExecutorType != "WebToolsGateway" {
+		t.Fatalf("record identity = provider %q model %q executor %q", record.Provider, record.Model, record.ExecutorType)
+	}
+	if record.Detail.WebSearchRequests != 1 || record.Detail.WebFetchRequests != 0 {
+		t.Fatalf("record detail = %+v, want one search", record.Detail)
+	}
+}
+
+func TestGatewayDoesNotPublishFailedSearchUsage(t *testing.T) {
+	capture := registerWebToolsUsageCapture(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{SDKConfig: config.SDKConfig{WebTools: config.WebTools{
+		Enabled: true, BaseURL: upstream.URL, APIKey: "k",
+	}}}
+	router := newTestRouter(cfg)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/tools/search", strings.NewReader(`{"query":"x"}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want the upstream 429 passed through", rec.Code)
+	}
+
+	select {
+	case record := <-capture.records:
+		t.Fatalf("failed request published a usage record: %+v", record)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
