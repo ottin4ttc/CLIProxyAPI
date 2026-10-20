@@ -7,11 +7,13 @@ var forkConfigRoots = []string{
 	"buckets",
 	"api-key-limits",
 	"model-access",
+	"provider-access",
 	"bucket-model-routes",
 	"credential-max-inflight",
 	"save-health-ring",
 	"conversation-store",
 	"web-tools",
+	"proxy-pool",
 }
 
 // forkExternalConfigRoots are fork roots read straight from the config file

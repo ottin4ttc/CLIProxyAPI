@@ -75,6 +75,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			oldCfg.ModelAccess.Enabled, newCfg.ModelAccess.Enabled,
 			len(oldCfg.ModelAccess.Rules), len(newCfg.ModelAccess.Rules)))
 	}
+	if !reflect.DeepEqual(oldCfg.ProviderAccess, newCfg.ProviderAccess) {
+		// Rule keys are API keys; only counts are safe to log.
+		changes = append(changes, fmt.Sprintf("provider-access: enabled %t -> %t, rules %d -> %d",
+			oldCfg.ProviderAccess.Enabled, newCfg.ProviderAccess.Enabled,
+			len(oldCfg.ProviderAccess.Rules), len(newCfg.ProviderAccess.Rules)))
+	}
 	if !reflect.DeepEqual(oldCfg.BucketModelRoutes, newCfg.BucketModelRoutes) {
 		changes = append(changes, fmt.Sprintf("bucket-model-routes: enabled %t -> %t, rules %d -> %d",
 			oldCfg.BucketModelRoutes.Enabled, newCfg.BucketModelRoutes.Enabled,

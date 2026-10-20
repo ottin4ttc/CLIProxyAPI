@@ -84,6 +84,9 @@ type authSelectionEligibility struct {
 	// buckets decides per provider whether bucket applies; nil applies it
 	// to every bucket-scoped provider.
 	buckets bucketIndex
+	// excludeProviders lists channel selectors the requesting client key may
+	// not use (provider-access rules).
+	excludeProviders []string
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -107,6 +110,7 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
 		bucket:           bucketFromMetadata(opts.Metadata),
 		buckets:          buckets,
+		excludeProviders: excludeProvidersFromMetadata(opts.Metadata),
 	}
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
@@ -129,6 +133,9 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 		return false
 	}
 	if isBucketScopedAuth(auth) && authBucket(auth) != e.bucketFor(auth.Provider) {
+		return false
+	}
+	if len(e.excludeProviders) > 0 && authExcludedByProviderSelectors(auth, e.excludeProviders) {
 		return false
 	}
 	return true
@@ -2302,6 +2309,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		m.mu.Unlock()
 	}
+	m.applyProxyPoolRef(authCopy)
 	return authCopy, executor, providerKey, nil
 }
 
@@ -2389,6 +2397,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		m.mu.Unlock()
 	}
+	m.applyProxyPoolRef(authCopy)
 	return authCopy, executor, providerKey, nil
 }
 

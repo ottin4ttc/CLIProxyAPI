@@ -110,6 +110,7 @@ func main() {
 	var claudeLogin bool
 	var noBrowser bool
 	var oauthCallbackPort int
+	var loginProxy string
 	var antigravityLogin bool
 	var kimiLogin bool
 	var kimiAILogin bool
@@ -140,6 +141,7 @@ func main() {
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
+	flag.StringVar(&loginProxy, "login-proxy", "", "Proxy-pool name or proxy URL used for OAuth login; persisted on the credential")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi (.com) using OAuth")
 	flag.BoolVar(&kimiAILogin, "kimi-ai-login", false, "Login to Kimi.ai using OAuth")
@@ -652,10 +654,19 @@ func main() {
 	githubauth.SetToken(cfg.GitHubToken)
 	managementasset.SetCurrentConfig(cfg)
 
+	resolvedLoginProxy, errLoginProxy := cfg.ResolveLoginProxy(loginProxy)
+	if errLoginProxy != nil {
+		log.Errorf("invalid --login-proxy: %v", errLoginProxy)
+		return
+	}
+
 	// Create login options to be used in authentication flows.
 	options := &cmd.LoginOptions{
 		NoBrowser:    noBrowser,
 		CallbackPort: oauthCallbackPort,
+		ProxyURL:     resolvedLoginProxy.URL,
+		ProxyRef:     resolvedLoginProxy.Ref,
+		Timezone:     resolvedLoginProxy.Timezone,
 	}
 
 	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin

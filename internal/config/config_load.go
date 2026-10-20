@@ -242,6 +242,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if errValidate := cfg.ValidateBucketModelRoutes(); errValidate != nil {
 		return nil, errValidate
 	}
+	if errValidate := cfg.ValidateProviderAccess(); errValidate != nil {
+		return nil, errValidate
+	}
 	if errValidate := cfg.ValidateAPIKeyLimits(); errValidate != nil {
 		return nil, errValidate
 	}
@@ -329,6 +332,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize the Search/Fetch gateway settings.
 	cfg.SanitizeWebTools()
+
+	// Normalize the named upstream proxy pool.
+	cfg.SanitizeProxyPool()
 
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)

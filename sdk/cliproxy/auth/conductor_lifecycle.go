@@ -86,6 +86,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		return nil, nil
 	}
 	NormalizeCredentialMetadata(auth.Metadata)
+	m.applyProxyPoolRef(auth)
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("register auth: %w", errWeight)
 	}
@@ -281,6 +282,8 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
 	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	applyProxyPoolRef(auth, cfg)
 	if auth.RegistrationEpoch != 0 && auth.RegistrationEpoch < m.authEpochs[auth.ID] {
 		m.mu.Unlock()
 		return nil, false, false, fmt.Errorf("update auth %s: stale registration epoch %d < %d", auth.ID, auth.RegistrationEpoch, m.authEpochs[auth.ID])
@@ -494,6 +497,10 @@ func (m *Manager) Load(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		cfg = &internalconfig.Config{}
+	}
 	m.mu.Lock()
 	previousAuths := m.auths
 	m.auths = make(map[string]*Auth, len(items))
@@ -508,6 +515,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 			continue
 		}
+		applyProxyPoolRef(auth, cfg)
 		auth.EnsureIndex()
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
@@ -539,7 +547,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		}
 	}
 
-	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	cfg, _ = m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
 	}

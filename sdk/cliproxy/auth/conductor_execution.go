@@ -1861,6 +1861,46 @@ func bucketFromMetadata(meta map[string]any) string {
 	return ""
 }
 
+// excludeProvidersFromMetadata reads provider-access channel selectors set by
+// the HTTP layer for the requesting client key.
+func excludeProvidersFromMetadata(meta map[string]any) []string {
+	if len(meta) == 0 {
+		return nil
+	}
+	raw, ok := meta[cliproxyexecutor.ExcludeProvidersMetadataKey]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch value := raw.(type) {
+	case []string:
+		return normalizeExcludeProviders(value)
+	case []any:
+		selectors := make([]string, 0, len(value))
+		for _, item := range value {
+			if text, okString := item.(string); okString {
+				selectors = append(selectors, text)
+			}
+		}
+		return normalizeExcludeProviders(selectors)
+	default:
+		return nil
+	}
+}
+
+func normalizeExcludeProviders(selectors []string) []string {
+	out := make([]string, 0, len(selectors))
+	for _, selector := range selectors {
+		selector = strings.ToLower(strings.TrimSpace(selector))
+		if selector != "" {
+			out = append(out, selector)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func isFreeCodexAuth(auth *Auth) bool {
 	if auth == nil || auth.Attributes == nil {
 		return false

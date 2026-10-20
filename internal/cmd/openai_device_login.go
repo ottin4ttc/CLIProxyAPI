@@ -37,7 +37,10 @@ func DoCodexDeviceLogin(cfg *config.Config, options *LoginOptions) {
 		Metadata: map[string]string{
 			codexLoginModeMetadataKey: codexLoginModeDevice,
 		},
-		Prompt: promptFn,
+		Prompt:   promptFn,
+		ProxyURL: options.ProxyURL,
+		ProxyRef: options.ProxyRef,
+		Timezone: options.Timezone,
 	}
 
 	_, savedPath, err := manager.Login(context.Background(), "codex", cfg, authOpts)

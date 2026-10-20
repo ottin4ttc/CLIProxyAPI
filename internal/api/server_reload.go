@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/access"
@@ -252,6 +253,11 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		vertexAICompatCount,
 		openAICompatCount,
 	)
+	if s.handlers != nil && s.handlers.AuthManager != nil {
+		if ids := s.handlers.AuthManager.UnbucketedOAuthAuthIDs("claude"); len(ids) > 0 {
+			log.Warnf("claude oauth credentials without a bucket are visible to unbucketed client keys: %s", strings.Join(ids, ", "))
+		}
+	}
 	return ctx.Err() == nil
 }
 

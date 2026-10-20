@@ -46,21 +46,50 @@ func modelAccessError(ctx context.Context, cfg *config.SDKConfig, model string) 
 }
 
 // FilterModelsForRequest drops models the requesting client API key may not
-// use under model-access rules. It returns models unchanged when rules are
-// disabled, so model listings only pay for the filter when it is on.
+// use under model-access rules, then drops models no credential visible to the
+// key's bucket can serve under provider-access rules. It returns models
+// unchanged when both rule sets are disabled, so model listings only pay for
+// the filters when they are on.
 func (h *BaseAPIHandler) FilterModelsForRequest(c *gin.Context, models []map[string]any) []map[string]any {
 	cfg := h.CurrentConfig()
-	if cfg == nil || !cfg.ModelAccess.Enabled {
+	if cfg == nil {
 		return models
 	}
 	apiKey := requestAPIKey(c)
+	modelAccessOn := cfg.ModelAccess.Enabled
+	providerAccessOn := cfg.ProviderAccess.Enabled
+	if !modelAccessOn && !providerAccessOn {
+		return models
+	}
+
 	filtered := make([]map[string]any, 0, len(models))
 	for _, model := range models {
-		if cfg.ModelAccessAllowed(apiKey, modelListEntryID(model)) {
-			filtered = append(filtered, model)
+		if modelAccessOn && !cfg.ModelAccessAllowed(apiKey, modelListEntryID(model)) {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+	if !providerAccessOn || h.AuthManager == nil || len(filtered) == 0 {
+		return filtered
+	}
+
+	excludes := make(map[string][]string, len(filtered))
+	ids := make([]string, 0, len(filtered))
+	for _, model := range filtered {
+		id := modelListEntryID(model)
+		if selectors := cfg.ProviderAccessExcludeProviders(apiKey, id); len(selectors) > 0 {
+			excludes[id] = selectors
+		}
+		ids = append(ids, id)
+	}
+	visible := h.AuthManager.FilterVisibleModels(ids, cfg.BucketForAPIKey(apiKey), excludes)
+	out := make([]map[string]any, 0, len(filtered))
+	for _, model := range filtered {
+		if visible[modelListEntryID(model)] {
+			out = append(out, model)
 		}
 	}
-	return filtered
+	return out
 }
 
 // modelListEntryID extracts the client-visible model name from a registry

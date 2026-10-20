@@ -24,6 +24,17 @@ type LoginOptions struct {
 
 	// Prompt allows the caller to provide interactive input when needed.
 	Prompt func(prompt string) (string, error)
+
+	// ProxyURL overrides the global proxy for login requests and is persisted
+	// as the credential's proxy_url.
+	ProxyURL string
+
+	// ProxyRef records the proxy-pool name ProxyURL was resolved from.
+	ProxyRef string
+
+	// Timezone is the proxy-pool entry's IANA timezone, persisted on the
+	// credential for the cloaked currentDate reminder.
+	Timezone string
 }
 
 // DoCodexLogin triggers the Codex OAuth flow through the shared authentication manager.
@@ -50,6 +61,9 @@ func DoCodexLogin(cfg *config.Config, options *LoginOptions) {
 		CallbackPort: options.CallbackPort,
 		Metadata:     map[string]string{},
 		Prompt:       promptFn,
+		ProxyURL:     options.ProxyURL,
+		ProxyRef:     options.ProxyRef,
+		Timezone:     options.Timezone,
 	}
 
 	_, savedPath, err := manager.Login(context.Background(), "codex", cfg, authOpts)

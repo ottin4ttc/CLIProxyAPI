@@ -156,6 +156,20 @@ access:
 #     - models: ["deepseek-*"]
 #       api-keys: ["sk-xxx"]
 
+# Optional: restrict which upstream credential channels may serve matched models
+# for matched client API keys. Selectors are "oauth", "apikey", "<provider>", or
+# "<provider>:<kind>"; '*' matches any substring. Model and api-key patterns also
+# accept '*'. Excluded channels never enter the candidate pool, so priority
+# fallback cannot reach them. When enabled, model lists also hide models that no
+# channel visible to the requesting key can serve; OAuth channels are scoped by
+# buckets (see above). Keys and models matching no rule are unrestricted.
+# provider-access:
+#   enabled: false
+#   rules:
+#     - models: ["claude-*"]
+#       api-keys: ["sk-sub-*"]
+#       exclude-providers: ["apikey"]
+
 # Optional: rewrite a requested model to another provider's model for client API
 # keys in a given bucket (see buckets above). Off by default. A rule
 # matches when the key's bucket and the exact requested model match; the request
@@ -170,6 +184,24 @@ access:
 #       from: gpt-5.6-sol
 #       provider: antigravity
 #       to: gemini-3.8-flash-high
+
+# Optional: named upstream proxies. --login-proxy accepts a pool name so proxy
+# credentials are configured once, and OAuth login persists both proxy_url and
+# proxy_ref on the credential. Credentials carrying proxy_ref re-resolve their
+# runtime proxy from this pool on load and config reload, which lets a password
+# rotation apply without editing auth files. An entry may also be "direct" or
+# "none" to bypass proxies explicitly.
+# password-env names an environment variable read at use time so the secret does
+# not have to live here; the URL must then carry a username. timezone is the
+# IANA zone of the proxy's exit region: --login-proxy copies it onto the
+# credential so the cloaked currentDate reminder matches the egress.
+# proxy-pool:
+#   us-1: "socks5h://127.0.0.1:1081"
+#   resi-1:
+#     url: "socks5h://user@1.2.3.4:1080"
+#     password-env: "RESI_1_PASSWORD"
+#     timezone: "America/New_York"
+#   direct: "direct"
 
 # Optional: Search/Fetch API gateway. Off by default. When enabled, this proxy
 # exposes POST /v1/tools/search and POST /v1/tools/fetch, authenticated with the

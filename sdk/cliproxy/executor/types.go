@@ -22,6 +22,10 @@ const DisallowFreeAuthMetadataKey = "disallow_free_auth"
 // selection can restrict bucket-scoped credentials to that bucket.
 const BucketMetadataKey = "bucket"
 
+// ExcludeProvidersMetadataKey carries the upstream channel selectors the
+// requesting client key may not use for the requested model.
+const ExcludeProvidersMetadataKey = "exclude_providers"
+
 // AuthSelectionModelMetadataKey overrides the model used only for auth selection.
 const AuthSelectionModelMetadataKey = "auth_selection_model"
 

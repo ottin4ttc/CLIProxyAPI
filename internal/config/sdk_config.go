@@ -100,8 +100,17 @@ type SDKConfig struct {
 	// ModelAccess restricts models matching a rule to that rule's client API keys.
 	ModelAccess ModelAccess `yaml:"model-access" json:"model-access"`
 
+	// ProviderAccess excludes upstream credential channels for matched models
+	// and client API keys, and hides models no visible channel can serve.
+	ProviderAccess ProviderAccess `yaml:"provider-access" json:"provider-access"`
+
 	// WebTools configures the Search/Fetch API gateway exposed under /v1/tools.
 	WebTools WebTools `yaml:"web-tools" json:"web-tools"`
+
+	// ProxyPool maps operator-defined names to upstream proxies. Credentials
+	// that carry a proxy_ref resolve their runtime proxy from this pool, and
+	// --login-proxy accepts a pool name.
+	ProxyPool ProxyPool `yaml:"proxy-pool" json:"proxy-pool"`
 
 	// BucketModelRoutes rewrites a requested model to another provider's
 	// model for client API keys in a given bucket.
@@ -420,6 +429,131 @@ type StreamingConfig struct {
 	// SendKeepAliveBeforeFT controls whether SSE heartbeats are sent before the first token arrives
 	// when KeepAliveSeconds > 0. Default is false.
 	SendKeepAliveBeforeFT bool `yaml:"send-keepalive-before-ft,omitempty" json:"send-keepalive-before-ft,omitempty"`
+}
+
+// ProviderAccess excludes upstream credential channels for matched models and
+// client API keys. Channels are identified by credential kind ("oauth" or
+// "apikey"), provider name, or "provider:kind"; an asterisk matches any
+// substring. When enabled, it also hides models that no visible channel of the
+// requesting key can serve.
+type ProviderAccess struct {
+	// Enabled turns enforcement on. When false, Rules are ignored entirely.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Rules lists model patterns, client API keys, and the channels those keys
+	// may not use for the matched models.
+	Rules []ProviderAccessRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// ProviderAccessRule excludes channels for the matched (model, client API key)
+// pairs. Matching follows ModelAccessRule: model patterns accept '*', API key
+// patterns accept '*' as well.
+type ProviderAccessRule struct {
+	// Models lists model names or wildcard patterns ('*' matches any substring).
+	Models []string `yaml:"models" json:"models"`
+
+	// APIKeys lists client API keys or wildcard patterns the rule applies to.
+	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+
+	// ExcludeProviders lists channel selectors the matched keys may not use.
+	ExcludeProviders []string `yaml:"exclude-providers,omitempty" json:"exclude-providers,omitempty"`
+}
+
+// ProviderAccessExcludeProviders returns the channel selectors the client API
+// key may not use for model. Matching rules are unioned; a key and model that
+// match no rule are unrestricted. A thinking suffix on model is ignored so
+// "claude-sonnet-5-5(high)" matches rules written for "claude-sonnet-5-5".
+func (c *SDKConfig) ProviderAccessExcludeProviders(apiKey, model string) []string {
+	if c == nil || !c.ProviderAccess.Enabled || len(c.ProviderAccess.Rules) == 0 {
+		return nil
+	}
+	model = ruleModelName(model)
+	bare := model
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		bare = model[idx+1:]
+	}
+	var out []string
+	seen := make(map[string]struct{})
+	for _, rule := range c.ProviderAccess.Rules {
+		if !rule.matchesModel(model) && !rule.matchesModel(bare) {
+			continue
+		}
+		if !rule.matchesAPIKey(apiKey) {
+			continue
+		}
+		for _, selector := range rule.ExcludeProviders {
+			selector = strings.ToLower(strings.TrimSpace(selector))
+			if selector == "" {
+				continue
+			}
+			if _, exists := seen[selector]; exists {
+				continue
+			}
+			seen[selector] = struct{}{}
+			out = append(out, selector)
+		}
+	}
+	return out
+}
+
+func (r ProviderAccessRule) matchesModel(model string) bool {
+	for _, pattern := range r.Models {
+		if matchModelAccessPattern(strings.TrimSpace(pattern), model) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r ProviderAccessRule) matchesAPIKey(apiKey string) bool {
+	for _, pattern := range r.APIKeys {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if pattern == apiKey || matchModelAccessPattern(pattern, apiKey) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleModelName strips a thinking suffix such as "claude-sonnet-5-5(high)".
+func ruleModelName(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.LastIndex(model, "("); idx > 0 && strings.HasSuffix(model, ")") {
+		return model[:idx]
+	}
+	return model
+}
+
+// ValidateProviderAccess rejects rules that cannot be enforced.
+func (c *SDKConfig) ValidateProviderAccess() error {
+	if c == nil || !c.ProviderAccess.Enabled {
+		return nil
+	}
+	for i, rule := range c.ProviderAccess.Rules {
+		if len(rule.Models) == 0 {
+			return fmt.Errorf("provider-access: rule %d: models must not be empty", i)
+		}
+		if len(rule.APIKeys) == 0 {
+			return fmt.Errorf("provider-access: rule %d: api-keys must not be empty", i)
+		}
+		for _, selector := range rule.ExcludeProviders {
+			selector = strings.ToLower(strings.TrimSpace(selector))
+			if selector == "" {
+				return fmt.Errorf("provider-access: rule %d: exclude-providers entries must not be empty", i)
+			}
+			name, kind, hasKind := strings.Cut(selector, ":")
+			if name == "" {
+				return fmt.Errorf("provider-access: rule %d: invalid provider selector %q", i, selector)
+			}
+			if hasKind && kind != "oauth" && kind != "apikey" {
+				return fmt.Errorf("provider-access: rule %d: invalid provider selector %q", i, selector)
+			}
+		}
+	}
+	return nil
 }
 
 // ModelAccess restricts models matching a rule to that rule's client API keys.

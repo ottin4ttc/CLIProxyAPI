@@ -55,13 +55,14 @@ func (m *Manager) Login(ctx context.Context, provider string, cfg *config.Config
 		return nil, "", fmt.Errorf("cliproxy auth: authenticator %s not registered", provider)
 	}
 
-	record, err := auth.Login(ctx, cfg, opts)
+	record, err := auth.Login(ctx, loginConfigWithProxy(cfg, opts), opts)
 	if err != nil {
 		return nil, "", err
 	}
 	if record == nil {
 		return nil, "", fmt.Errorf("cliproxy auth: authenticator %s returned nil record", provider)
 	}
+	applyLoginProxyMetadata(record, opts)
 
 	if m.store == nil {
 		return record, "", nil
@@ -112,4 +113,50 @@ func (m *Manager) Login(ctx context.Context, provider string, cfg *config.Config
 		}
 	}
 	return record, savedPath, nil
+}
+
+// loginConfigWithProxy returns cfg with the per-login proxy override applied.
+// Authenticators read the global proxy from cfg, so the override is expressed
+// as a runtime clone rather than a provider-specific option.
+func loginConfigWithProxy(cfg *config.Config, opts *LoginOptions) *config.Config {
+	if cfg == nil || opts == nil {
+		return cfg
+	}
+	proxyURL := strings.TrimSpace(opts.ProxyURL)
+	if proxyURL == "" || proxyURL == strings.TrimSpace(cfg.ProxyURL) {
+		return cfg
+	}
+	cloned := cfg.CloneForRuntime()
+	if cloned == nil {
+		return cfg
+	}
+	cloned.ProxyURL = proxyURL
+	return cloned
+}
+
+// applyLoginProxyMetadata persists the login proxy on the credential so the
+// runtime and token refresh use the same egress.
+func applyLoginProxyMetadata(record *coreauth.Auth, opts *LoginOptions) {
+	if record == nil || opts == nil {
+		return
+	}
+	proxyURL := strings.TrimSpace(opts.ProxyURL)
+	if proxyURL == "" {
+		return
+	}
+	if record.Metadata == nil {
+		record.Metadata = make(map[string]any)
+	}
+	record.Metadata["proxy_url"] = proxyURL
+	record.ProxyURL = proxyURL
+	if proxyRef := strings.TrimSpace(opts.ProxyRef); proxyRef != "" {
+		record.Metadata["proxy_ref"] = proxyRef
+	} else {
+		// An explicit proxy URL wins over a stale reference carried by the
+		// existing credential; the empty value keeps the merge from restoring it.
+		record.Metadata["proxy_ref"] = ""
+	}
+	if timezone := strings.TrimSpace(opts.Timezone); timezone != "" {
+		record.Metadata["timezone"] = timezone
+	}
 }

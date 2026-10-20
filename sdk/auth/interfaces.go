@@ -19,6 +19,14 @@ type LoginOptions struct {
 	CallbackPort int
 	Metadata     map[string]string
 	Prompt       func(prompt string) (string, error)
+	// ProxyURL overrides the global proxy for login requests and is persisted
+	// as the credential's proxy_url.
+	ProxyURL string
+	// ProxyRef records the proxy-pool name ProxyURL was resolved from.
+	ProxyRef string
+	// Timezone is the proxy-pool entry's IANA timezone. It is persisted on the
+	// credential and drives the cloaked currentDate reminder.
+	Timezone string
 }
 
 // Authenticator manages login and optional refresh flows for a provider.

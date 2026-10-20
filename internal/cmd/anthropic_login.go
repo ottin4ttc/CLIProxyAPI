@@ -36,6 +36,9 @@ func DoClaudeLogin(cfg *config.Config, options *LoginOptions) {
 		CallbackPort: options.CallbackPort,
 		Metadata:     map[string]string{},
 		Prompt:       promptFn,
+		ProxyURL:     options.ProxyURL,
+		ProxyRef:     options.ProxyRef,
+		Timezone:     options.Timezone,
 	}
 
 	_, savedPath, err := manager.Login(context.Background(), "claude", cfg, authOpts)

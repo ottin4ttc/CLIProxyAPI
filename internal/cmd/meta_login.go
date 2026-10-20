@@ -26,6 +26,9 @@ func DoMetaLogin(cfg *config.Config, options *LoginOptions) {
 		CallbackPort: options.CallbackPort,
 		Metadata:     map[string]string{},
 		Prompt:       promptFn,
+		ProxyURL:     options.ProxyURL,
+		ProxyRef:     options.ProxyRef,
+		Timezone:     options.Timezone,
 	}
 
 	record, savedPath, err := manager.Login(context.Background(), "meta", cfg, authOpts)

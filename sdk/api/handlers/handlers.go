@@ -380,6 +380,30 @@ func addAuthSelectionModelMetadata(meta map[string]any, model string) {
 	meta[coreexecutor.AuthSelectionModelMetadataKey] = model
 }
 
+// addProviderAccessMetadata records the upstream channels the requesting client
+// key may not use for model. Auth selection applies the exclusion before
+// priority fallback, so an excluded channel can never serve the request.
+func (h *BaseAPIHandler) addProviderAccessMetadata(ctx context.Context, meta map[string]any, model string) {
+	if meta == nil || h == nil {
+		return
+	}
+	cfg := h.CurrentConfig()
+	if cfg == nil || !cfg.ProviderAccess.Enabled {
+		return
+	}
+	apiKey := ""
+	if ctx != nil {
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+			apiKey = requestAPIKey(ginCtx)
+		}
+	}
+	excludes := cfg.ProviderAccessExcludeProviders(apiKey, model)
+	if len(excludes) == 0 {
+		return
+	}
+	meta[coreexecutor.ExcludeProvidersMetadataKey] = excludes
+}
+
 func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, rawJSON []byte) {
 	if meta == nil {
 		return
