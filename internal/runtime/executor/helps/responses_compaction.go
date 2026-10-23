@@ -30,34 +30,6 @@ func IsCPACompactionCapsule(encryptedContent string) bool {
 		strings.HasPrefix(encryptedContent, legacyCompatCompactionCapsulePrefixV3)
 }
 
-// HasResponsesCompactionTrigger checks whether input contains a compaction_trigger item.
-func HasResponsesCompactionTrigger(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
-	if !input.IsArray() {
-		return false
-	}
-	for _, item := range input.Array() {
-		if item.Get("type").String() == "compaction_trigger" {
-			return true
-		}
-	}
-	return false
-}
-
-// HasResponsesCompactionItem checks whether input contains a compaction item.
-func HasResponsesCompactionItem(payload []byte) bool {
-	input := gjson.GetBytes(payload, "input")
-	if !input.IsArray() {
-		return false
-	}
-	for _, item := range input.Array() {
-		if item.Get("type").String() == "compaction" {
-			return true
-		}
-	}
-	return false
-}
-
 // PrepareResponsesCompactionSummaryPayload prepares a payload for non-stream summary generation.
 func PrepareResponsesCompactionSummaryPayload(payload []byte, modelName string) []byte {
 	out := payload

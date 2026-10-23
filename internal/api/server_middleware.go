@@ -34,6 +34,9 @@ var corsExposedResponseHeaders = []string{
 	// Retry-After is set by rpmLimitMiddleware on 429s; without exposing it a
 	// browser client cannot read it and cannot back off correctly.
 	"Retry-After",
+	// Cross-origin management clients must read the config version token to
+	// send it back as If-Match on writes.
+	"ETag",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
 }
