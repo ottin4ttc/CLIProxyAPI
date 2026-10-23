@@ -647,12 +647,12 @@ func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
 	reporter.ObserveResponseModel(payload)
 }
 
-// newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.
+// newCodexBootstrapOverloadErr reports a buffered overload rejection.
 //
-// The status is deliberately produced here instead of in codexTerminalFailureStatus: that mapping
-// is shared with the unbuffered path, where the rejection is delivered in-stream and a status
-// change would alter cooldown classification and retry-after parsing for everyone. Keeping 503
-// scoped to this path means disabling the feature restores the previous behaviour exactly.
+// The status argument passed in is advisory only: newCodexStatusErr maps every in-band overload
+// or capacity body to a retryable 429, buffered or not, so the overload cooldown ladder sees one
+// status regardless of how the rejection was delivered. Anything else would split classification
+// between the buffered failover path and the unbuffered in-stream path.
 func newCodexBootstrapOverloadErr(body []byte) statusErr {
 	return newCodexStatusErr(http.StatusServiceUnavailable, body)
 }
