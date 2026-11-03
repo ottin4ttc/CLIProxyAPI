@@ -22,3 +22,17 @@ This is a locally reproduced protocol bug. A separate live candidate-matching di
 This restores the existing response-status contract and uses existing usage metadata; no new analytics system, telemetry event, or prompt logging is added. No secrets, real resumes, or chain-of-thought content are used by the regression fixtures.
 
 Clients now receive an incomplete response and must handle it as such. This does not make the filtered answer complete or establish any latency improvement. A production incident still requires the original upstream stop reason and the deployed proxy revision before attributing causality.
+
+## Executor and consumer follow-up (2026-11-03)
+
+The focused executor regression now observes the final HTTP request with a synthetic upstream. The 24 effort cases cover max/xhigh/high/medium, streaming/non-streaming, and preserve/override/filter policies. The default Opus 5.5 model preserves four distinct efforts; final payload overrides win and filtered effort fields are not restored. Two additional cases verify that a sensitive stop remains incomplete/content_filter through the full executor, preserves partial text and usage, and emits exactly one stream terminal event.
+
+Validation: `go test ./internal/runtime/executor -run 'TestClaudeResponses(FinalWireEffort|SensitiveStopThroughExecutor)$' -count=1` passed, and `go build -o /tmp/cdemo-cpa-final-wire-check ./cmd/server` passed. These are local synthetic tests for the base model, not observations of the deployed baidu alias, live configuration, or provider acceptance.
+
+An offline consumer replay using the published Pi AI 1.3.0 Responses parser and the existing Clawd event translator/completion projector confirmed the consequence: completed partial JSON becomes Pi stop / gateway success, whereas incomplete/content_filter becomes Pi error / gateway failure. Both preserve the partial text. The valid-completion control passes; a max-output control maps to Pi length and still needs the business layer's strict JSON validation. No retry loop, live provider call, real incident recovery, or latency gain is established by this replay. Its fixtures and package lock remain in the private experiment directory; no credentials or real resumes were used.
+
+## Full local process check (2026-11-03)
+
+A separate loopback-only harness ran the actual Pi 1.3.0 CLI, CLIProxyAPI provider 1.4.15, this server build, and a synthetic Anthropic upstream. Both imported Persona instruction files were physically loaded, without appending them to an older cloud image. A local alias mapped `claude-opus-5-5-baidu` to `claude-opus-5-5`; no real provider credentials, business tools, or external inference were used.
+
+All nine cases passed: four efforts for each of two instruction files, plus a partial JSON response ending in sensitive. Each effort reached the final HTTP request unchanged with adaptive thinking and max_tokens=128000. The sensitive case ended with Pi error / incomplete.content_filter, one upstream request, and zero automatic retries in the full agent loop. This extends the consumer replay evidence, but the alias configuration and upstream were synthetic. It does not establish the deployed alias behavior, actual medical stop reason, live retry behavior, or quality/latency improvement. The harness, package lock, and metadata-only result remain in the private experiment directory.
