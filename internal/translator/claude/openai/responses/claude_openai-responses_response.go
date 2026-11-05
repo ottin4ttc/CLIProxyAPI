@@ -173,9 +173,10 @@ func claudeResponsesIncompleteDetails(stopReason string) ([]byte, bool) {
 	switch strings.ToLower(strings.TrimSpace(stopReason)) {
 	case "max_tokens", "model_context_window_exceeded":
 		return []byte(`{"reason":"max_output_tokens"}`), true
-	case "refusal":
+	case "refusal", "sensitive":
 		// Safety classifiers stop the turn with a normal 200. Responses clients
-		// treat content_filter as a retryable refusal instead of a finished answer:
+		// must see an incomplete answer, including compatible upstreams that use
+		// sensitive instead of refusal (also recognized by the Chat translator):
 		// https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons#refusal
 		return []byte(`{"reason":"content_filter"}`), true
 	}

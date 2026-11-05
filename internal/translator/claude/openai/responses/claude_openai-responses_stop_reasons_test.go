@@ -299,11 +299,13 @@ func TestPausedSearchContinuationRequiresSameAssistantRun(t *testing.T) {
 
 func runStopReasonErrorsKeepOutput(t *testing.T) {
 	for _, tc := range []struct {
-		reason string
-		event  string
+		reason           string
+		event            string
+		incompleteReason string
 	}{
-		{"refusal", "response.incomplete"},
-		{"model_context_window_exceeded", "response.incomplete"},
+		{"refusal", "response.incomplete", "content_filter"},
+		{"sensitive", "response.incomplete", "content_filter"},
+		{"model_context_window_exceeded", "response.incomplete", "max_output_tokens"},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
 			chunks := [][]byte{
@@ -335,6 +337,9 @@ func runStopReasonErrorsKeepOutput(t *testing.T) {
 			if terminal.Get("status").String() != "incomplete" {
 				t.Fatalf("status = %q, want incomplete", terminal.Get("status").String())
 			}
+			if got := terminal.Get("incomplete_details.reason").String(); got != tc.incompleteReason {
+				t.Fatalf("incomplete reason = %q, want %q", got, tc.incompleteReason)
+			}
 			if errNode := terminal.Get("error"); errNode.Exists() && errNode.Type != gjson.Null {
 				t.Fatalf("unexpected error = %s", errNode.Raw)
 			}
@@ -342,6 +347,28 @@ func runStopReasonErrorsKeepOutput(t *testing.T) {
 				t.Fatalf("usage = %s", terminal.Get("usage").Raw)
 			}
 		})
+	}
+}
+
+func TestSensitiveStopNonStreamPreservesPartialOutputAndUsage(t *testing.T) {
+	const partial = `{"picks":[{"job_id":"J1"`
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_sensitive","usage":{"input_tokens":7,"output_tokens":0,"cache_read_input_tokens":3}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		[]byte(fmt.Sprintf(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}`, partial)),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"sensitive"},"usage":{"output_tokens":4}}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+	output := gjson.ParseBytes(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, bytes.Join(chunks, []byte("\n")), nil))
+	if output.Get("status").String() != "incomplete" || output.Get("incomplete_details.reason").String() != "content_filter" {
+		t.Fatalf("response = %s", output.Raw)
+	}
+	if output.Get("output.0.status").String() != "incomplete" || output.Get("output.0.content.0.text").String() != partial {
+		t.Fatalf("output = %s", output.Get("output").Raw)
+	}
+	if output.Get("usage.input_tokens").Int() != 10 || output.Get("usage.input_tokens_details.cached_tokens").Int() != 3 || output.Get("usage.output_tokens").Int() != 4 {
+		t.Fatalf("usage = %s", output.Get("usage").Raw)
 	}
 }
 
